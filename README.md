@@ -71,7 +71,7 @@ Para detalhes aprofundados sobre cada etapa - consulte nossa documentação téc
 | **Monitoramento** | [Cálculo e Detecção de Desmatamento](METODOLOGIA_DESMATAMENTO.md) |
 | **Validação** | [Cálculo do Índice Kappa](METODOLOGIA_KAPPA.md) |
 | **Análise Espacial** | [Distribuição e Agregação de Dados](METODOLOGIA_DISTRIBUICAO.md) |
-| **Conversão de Formatos .shp para .png** | [Distribuição e Agregação de Dados](METODOLOGIA_CONVERSAO_FORMATOS.md) |
+| **Conversão de Formatos .shp para .png** | [Conversão de Formatos .shp para .png](METODOLOGIA_CONVERSAO_FORMATOS.md) |
 ---
 
 ## 🖼️ Galeria de Resultados
@@ -85,4 +85,6 @@ Abaixo, os principais produtos visuais gerados pelo pipeline:
 ### Imagens de Satélite (Landsat)
 * **Satélite 2018:** ![Satélite 2018](SP-Urban-Case/GEE/satelite_2018_fundo_branco.jpg)
 * **Satélite 2024:** ![Satélite 2024](SP-Urban-Case/GEE/satelite_2024_fundo_branco.jpg)
+
+---
 *Desenvolvido como ferramenta de suporte à gestão ambiental urbana.*
