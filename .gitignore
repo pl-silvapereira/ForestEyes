@@ -215,3 +215,4 @@ __marimo__/
 *.shx
 *.tif
 *.qml
+/data
