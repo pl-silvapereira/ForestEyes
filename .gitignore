@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+*.tif
+*.cpg
+*.dbf
+*.qml
+*.shx
+data/CBERS4A-WPM/inpe_catalog_2026_4_6_19_24_3.txt
