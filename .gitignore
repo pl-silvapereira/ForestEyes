@@ -213,3 +213,5 @@ __marimo__/
 *.prj
 *.shp
 *.shx
+*.tif
+*.qml
