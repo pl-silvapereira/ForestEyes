@@ -1,0 +1,40 @@
+# 1. FLORESTAS
+registar_categoria([3], 'Floresta', '#006400', 
+    'Area verde (ha) por 100.000 hab. e indices de qualidade do ar.', 
+    'Monitorizacao IoT de desmatamento e saude vegetal.', 
+    'Mitigacao de Ilhas de Calor Urbanas (UHI).')
+
+registar_categoria([9], 'Floresta Antrópica', '#93c47d', 
+    'Area verde (ha) por 100.000 hab. e indices de qualidade do ar.', 
+    'Monitorizacao IoT de desmatamento e saude vegetal.', 
+    'Mitigacao de Ilhas de Calor Urbanas (UHI).')
+
+# 2. VEGETAÇÃO HERBÁCEA E ARBUSTIVA
+registar_categoria([11, 12, 36], 'Vegetacao Herbacea e Arbustiva', '#a8c04d', 
+    'Manutencao da biodiversidade local e % de areas nao pavimentadas.', 
+    'Monitorizacao preditiva de risco de queimadas.', 
+    'Areas de amortecimento (Buffer Zones) e permeabilidade do solo.')
+
+# 3. AGROPECUÁRIA E LAVOURAS
+registar_categoria([15, 19, 20, 21, 39, 41, 46, 48], 'Agropecuaria (Campos, Lavouras)', '#edde8e', 
+    'Protecao de terras araveis contra o espraiamento urbano (Urban Sprawl).', 
+    'Agrotech, agricultura de precisao e rastreabilidade local.', 
+    'Garantia de seguranca alimentar e autoabastecimento.')
+
+# 4. INFRAESTRUTURA URBANA
+registar_categoria([24, 25], 'Infraestrutura Urbana', '#d4271e', 
+    'Densidade populacional, acesso a moradia e crescimento da mancha urbana.', 
+    'Infraestrutura conectada (Smart Grids) e mobilidade inteligente.', 
+    'Vulnerabilidade da infraestrutura critica frente a desastres.')
+
+# 5. CORPOS HÍDRICOS (ÁGUA/ROCHA)
+registar_categoria([29, 31, 33], 'Nao Observado (Agua, Rocha)', '#0000ff', 
+    'Disponibilidade, acesso e qualidade das reservas hidricas superficiais.', 
+    'Telemetria e sensores para controlo de qualidade e nivel.', 
+    'Prevencao de inundacoes e respeito as Areas de Preservacao Permanente (APP).')
+
+# 6. DESCARTADAS (RUÍDO)
+registar_categoria([4, 5, 6, 23, 27, 30, 32, 35, 40, 47, 49, 50, 62, 75], 'Descartadas', '#A9A9A9', 
+    'N/A - Filtragem de dados para precisao dos calculos.', 
+    'N/A - Otimizacao de processamento analitico.', 
+    'N/A - Remocao de anomalias da modelagem de risco.')
