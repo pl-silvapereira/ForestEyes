@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 load_dotenv()
 ROOT = os.getenv('PROJECT_ROOT')
 
-ibge_shp = os.path.join(ROOT, 'data', 'IBGE', 'SJC_2025.shp')
 mapbiomas_dir = os.path.join(ROOT, 'data', 'MapBiomas')
 
 def formatar_coords(n, s, l, o, fonte):
@@ -22,25 +21,6 @@ def formatar_coords(n, s, l, o, fonte):
     print(f"Oeste (Lon): {o:.6f}")
     print("-" * 35)
     print(f"Bounding Box (W, S, E, N): {o:.6f}, {s:.6f}, {l:.6f}, {n:.6f}\n")
-
-def verificar_limites_ibge():
-    """Lê o Shapefile do IBGE e extrai os limites."""
-    print("=== Verificando Limites IBGE ===")
-    if os.path.exists(ibge_shp):
-        try:
-            gdf = gpd.read_file(ibge_shp)
-            print(f"🔍 Referência IBGE: {os.path.basename(ibge_shp)}")
-            print(f"   - Sistema de Coordenadas (CRS): {gdf.crs}")
-            
-            # Converte para WGS84 (Lat/Lon) para garantir a leitura correta
-            gdf_wgs84 = gdf.to_crs(epsg=4326)
-            minx, miny, maxx, maxy = gdf_wgs84.total_bounds
-            formatar_coords(maxy, miny, maxx, minx, "SHP do IBGE")
-            
-        except Exception as e:
-            print(f"❌ Erro ao ler IBGE: {e}")
-    else:
-        print(f"⚠️ Arquivo IBGE não encontrado em {ibge_shp}\n")
 
 def verificar_referencia_mapbiomas():
     """Lê o raster do MapBiomas, mostra metadados nativos e extrai limites."""
@@ -75,6 +55,5 @@ def verificar_referencia_mapbiomas():
 
 if __name__ == "__main__":
     print("Iniciando verificação espacial e metadados...\n")
-    verificar_limites_ibge()
     verificar_referencia_mapbiomas()
     print("Verificação concluída.")
