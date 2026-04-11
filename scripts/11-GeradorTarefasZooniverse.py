@@ -16,7 +16,7 @@ if not os.path.exists(dir_zoo): os.makedirs(dir_zoo)
 
 def exportar_hotspots_zooniverse():
     path_rgb = os.path.join(dir_out, "02_SJC_Recortado_MapBiomas.tif")
-    path_seg = os.path.join(dir_out, "03_SJC_Segmentacao_SLIC_Total.tif")
+    path_seg = os.path.join(dir_out, "03_SJC_Segmentacao_SLIC_Mudancas.tif")
     path_mud = os.path.join(dir_out, "04_SJC_Mapa_Mudancas_21_23.tif")
 
     print("🎯 Filtrando apenas mudanças para a campanha...")
