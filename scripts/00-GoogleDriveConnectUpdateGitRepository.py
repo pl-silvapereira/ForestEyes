@@ -1,31 +1,45 @@
-from google.colab import drive
 import os
+import subprocess
+import shutil
+from google.colab import drive
 
-# 1. Conecta o seu Google Drive (vai pedir autorização)
+# 1. Conecta o seu Google Drive
 drive.mount('/content/drive')
 
-# 2. Define o caminho exato de destino no seu Drive
+# 2. Caminhos
 caminho_destino = "/content/drive/MyDrive/Mestrado/04-Projeto ForestEyes/ForestEyes/scripts"
+temp_dir = "/tmp/ForestEyes_temp"
 
 # Garante que a pasta de destino exista
 os.makedirs(caminho_destino, exist_ok=True)
 
-print("Baixando o repositório...")
+print("🧹 Limpando pastas temporárias antigas...")
+if os.path.exists(temp_dir):
+    shutil.rmtree(temp_dir)
 
-# 3. Comandos de terminal integrados para baixar e mover os arquivos
-# Remove qualquer pasta temporária antiga
-!rm -rf /tmp/ForestEyes_temp
+print("📥 Baixando o repositório (branch develop)...")
+# Usamos subprocess.run para executar comandos de sistema dentro do .py
+subprocess.run([
+    "git", "clone", "-b", "develop", "--single-branch", 
+    "https://github.com/pl-silvapereira/ForestEyes.git", temp_dir
+], check=True)
 
-# Clona APENAS a branch 'develop' (usando --single-branch fica muito mais rápido)
-!git clone -b develop --single-branch https://github.com/pl-silvapereira/ForestEyes.git /tmp/ForestEyes_temp
+print("📂 Copiando scripts para o Google Drive...")
+# Listamos os arquivos e copiamos um a um ou a pasta toda
+origem_scripts = os.path.join(temp_dir, "scripts")
+if os.path.exists(origem_scripts):
+    # Copia o conteúdo da pasta scripts temporária para o destino no Drive
+    for item in os.listdir(origem_scripts):
+        s = os.path.join(origem_scripts, item)
+        d = os.path.join(caminho_destino, item)
+        if os.path.isdir(s):
+            if os.path.exists(d): shutil.rmtree(d)
+            shutil.copytree(s, d)
+        else:
+            shutil.copy2(s, d)
 
-print("Copiando a pasta 'scripts' para o Google Drive...")
+# Limpeza final
+print("🧼 Limpando arquivos temporários...")
+shutil.rmtree(temp_dir)
 
-# Copia os arquivos da pasta scripts para o seu Drive
-# (As aspas em "{caminho_destino}" protegem o espaço no nome da sua pasta)
-!cp -r /tmp/ForestEyes_temp/scripts/* "{caminho_destino}/"
-
-# Limpa a lixeira (apaga o resto do repositório que não precisamos)
-!rm -rf /tmp/ForestEyes_temp
-
-print("✅ Download e cópia concluídos com sucesso!")
+print("✅ Sincronização concluída com sucesso!")
