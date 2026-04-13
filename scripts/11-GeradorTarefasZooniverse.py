@@ -1,4 +1,5 @@
 import os
+import gc
 import pandas as pd
 import numpy as np
 import rasterio
@@ -9,21 +10,12 @@ from dotenv import load_dotenv
 load_dotenv()
 ROOT = os.getenv('PROJECT_ROOT')
 dir_out = os.path.join(ROOT, 'data', 'Output')
-dir_zoo = os.path.join(ROOT, 'data', 'Zooniverse_Foco_Impacto')
+dir_zoo = os.path.join(ROOT, 'data', 'Zooniverse_Foco_Vegetacao')
 
 if not os.path.exists(dir_zoo): os.makedirs(dir_zoo)
 
-# Metadados ISO refinados
-iso_metadata = {
-    3: "ISO 37120: Floresta Nativa - Preservacao e Qualidade do Ar",
-    9: "ISO 37120: Floresta Antropica - Recuperacao Verde",
-    11: "ISO 37122: Vegetacao Herbacea - Permeabilidade e Risco de Fogo",
-    12: "ISO 37122: Formacao Arbustiva - Biodiversidade Local",
-    36: "ISO 37122: Campo Alagado - Protecao de Recursos Hidricos"
-}
-
-def gerar_campanha_alta_relevancia():
-    print("🚀 Aplicando Funil de Alta Relevância (Foco: Qualidade > Quantidade)...")
+def gerar_campanha_safe_mode():
+    print("🛡️ Iniciando Script 11 em Modo de Segurança (Baixo Consumo de RAM)...")
     
     path_rgb = os.path.join(dir_out, "02_SJC_Recortado_MapBiomas.tif")
     path_seg = os.path.join(dir_out, "03_SJC_Segmentacao_SLIC_Mudancas.tif")
@@ -33,69 +25,68 @@ def gerar_campanha_alta_relevancia():
          rasterio.open(path_seg) as src_seg, \
          rasterio.open(path_mud) as src_mud:
         
-        img_data = src_rgb.read([1, 2, 3])
-        # Normalização com brilho extra para facilitar a visão do voluntário
-        img_display = np.zeros(img_data.shape, dtype=np.uint8)
-        for b in range(3):
-            p2, p98 = np.percentile(img_data[b], (2, 98))
-            img_display[b] = np.clip((img_data[b] - p2) / (p98 - p2 + 1e-5) * 255, 0, 255).astype(np.uint8)
+        # Lendo apenas os metadados primeiro
+        segmentos_full = src_seg.read(1)
+        ids_brutos = np.unique(segmentos_full[segmentos_full > 0])
         
-        img_display = np.transpose(img_display, (1, 2, 0))
-        segmentos = src_seg.read(1)
-        mapa_mudanca = src_mud.read(1)
+        print(f"📊 Total para processar: {len(ids_brutos)} superpixels.")
         
-        ids_brutos = np.unique(segmentos[segmentos > 0])
+        # Filtro de área maior para reduzir a carga imediatamente
+        # (Aumentamos para 600 pixels = 2400m² para garantir que a campanha seja leve)
+        area_min_pixels = 600 
+        
         manifesto = []
+        
+        # Carregamos a imagem RGB e o mapa de mudança
+        img_full = src_rgb.read([1, 2, 3])
+        mapa_mud_full = src_mud.read(1)
 
-        # --- FILTROS AGRESSIVOS PARA A TESE ---
-        # 1. Área Mínima: 500 pixels (2.000m²) - Foca em desmatamentos/mudanças reais
-        area_min_pixels = 500 
-
-        for seg_id in ids_brutos:
-            mask = (segmentos == seg_id)
+        for idx, seg_id in enumerate(ids_brutos):
+            mask = (segmentos_full == seg_id)
             
-            # Filtro 1: Tamanho do objeto
             if np.sum(mask) < area_min_pixels:
                 continue
 
-            # Filtro 2: Pureza de Classe (Apenas 1 classe por superpixel)
-            classes_dentro = mapa_mudanca[mask]
-            classes_unicas = np.unique(classes_dentro[classes_dentro > 0])
+            # Validação de Pureza
+            classes_no_seg = mapa_mud_full[mask]
+            classes_puras = np.unique(classes_no_seg[classes_no_seg > 0])
             
-            if len(classes_unicas) != 1:
-                continue # Descarta se houver mistura de classes
+            if len(classes_puras) != 1:
+                continue
             
-            class_id = int(classes_unicas[0])
-
-            # Filtro 3: Priorização (Opcional - se quiser reduzir ainda mais)
-            # if class_id not in [3, 9]: continue # Exemplo: focar só em floresta
-
-            # --- PROCESSAMENTO DO RECORTE ---
+            # Recorte
             coords = np.argwhere(mask)
-            y_min, x_min = max(0, coords.min(axis=0)[0]-30), max(0, coords.min(axis=0)[1]-30)
-            y_max, x_max = min(img_display.shape[0], coords.max(axis=0)[0]+30), min(img_display.shape[1], coords.max(axis=0)[1]+30)
+            y_min, x_min = max(0, coords[:,0].min()-25), max(0, coords[:,1].min()-25)
+            y_max, x_max = min(img_full.shape[1], coords[:,0].max()+25), min(img_full.shape[2], coords[:,1].max()+25)
 
-            chip = img_display[y_min:y_max, x_min:x_max].copy()
+            # Extração do Chip
+            chip_data = img_full[:, y_min:y_max, x_min:x_max]
             
-            # Borda Amarela (Pureza Visual)
+            # Normalização local (consome menos RAM que normalizar a imagem inteira)
+            chip_norm = np.zeros((chip_data.shape[1], chip_data.shape[2], 3), dtype=np.uint8)
+            for b in range(3):
+                band = chip_data[b]
+                p2, p98 = np.percentile(band, (2, 98))
+                chip_norm[:,:,b] = np.uint8(np.clip((band - p2) / (p98 - p2 + 1e-5) * 255, 0, 255))
+
+            # Borda Amarela
             mask_local = mask[y_min:y_max, x_min:x_max]
             bordas = find_boundaries(mask_local, mode='thick')
-            chip[bordas] = [255, 255, 0]
+            chip_norm[bordas] = [255, 255, 0]
             
-            img_name = f"SJC_PURE_VEG_{seg_id}.png"
-            Image.fromarray(chip).save(os.path.join(dir_zoo, img_name))
+            # Salva Imagem
+            img_name = f"SJC_VEG_{seg_id}.png"
+            Image.fromarray(chip_norm).save(os.path.join(dir_zoo, img_name))
             
-            manifesto.append({
-                "image_name": img_name,
-                "id_segmento": seg_id,
-                "classe_mapbiomas": class_id,
-                "area_m2": np.sum(mask) * 4,
-                "indicador_iso": iso_metadata.get(class_id, "Monitoramento Ambiental")
-            })
+            manifesto.append({"image_name": img_name, "id": seg_id})
 
-        # Salva Manifesto
+            # A cada 100 imagens, forçamos a limpeza da memória
+            if idx % 100 == 0:
+                print(f"✅ {idx} processados... RAM limpa.")
+                gc.collect()
+
         pd.DataFrame(manifesto).to_csv(os.path.join(dir_zoo, "manifest.csv"), index=False)
-        print(f"✅ Filtro concluído! Reduzimos para {len(manifesto)} tarefas de alta qualidade.")
+        print(f"🏁 Finalizado! {len(manifesto)} imagens prontas.")
 
 if __name__ == "__main__":
-    gerar_campanha_alta_relevancia()
+    gerar_campanha_safe_mode()
