@@ -48,3 +48,4 @@ __marimo__/
 data/CBERS4A-WPM/inpe_catalog_2026_4_6_19_24_3.txt
 *.qml
 *.qmd
+/data
