@@ -18,8 +18,8 @@ path_mud = os.path.join(dir_out, "04_SJC_Mapa_Mudancas_21_23.tif")
 path_som = os.path.join(dir_out, "05_SJC_Mascara_Sombras.tif")
 saida_seg = os.path.join(dir_out, "03_SJC_Segmentacao_SLIC_Mudancas.tif")
 
-def executar_slic_quadrado():
-    print("🚀 Segmentando em Blocos Quadrados (Alta Compacidade)...")
+def executar_slic_blocos_rigidos():
+    print("🚀 Gerando Blocos Quadrados Rígidos (Compactness=50)...")
     with rasterio.open(path_rgb) as src_rgb, \
          rasterio.open(path_mud) as src_mud, \
          rasterio.open(path_som) as src_som:
@@ -35,20 +35,19 @@ def executar_slic_quadrado():
                 for j in range(0, src_rgb.height, 1024):
                     for i in range(0, src_rgb.width, 1024):
                         win = Window(i, j, min(1024, src_rgb.width - i), min(1024, src_rgb.height - j))
-                        # Máscara: Mudou (MapBiomas) E Não é Sombra
                         mask = (v_mud.read(1, window=win) > 0) & (v_som.read(1, window=win) == 0)
                         mask = binary_opening(mask, structure=np.ones((3,3)))
                         
-                        if np.sum(mask) < 100: continue
+                        if np.sum(mask) < 50: continue
                         
                         img = src_rgb.read([1, 2, 3], window=win).astype(np.float32)
                         for b in range(3):
                             p2, p98 = np.percentile(img[b], (2, 98))
                             img[b] = np.clip((img[b]-p2)/(p98-p2+1e-5), 0, 1)
                         
-                        # COMPACTNESS=30: Força a forma quadrada/bloco
-                        seg = slic(np.transpose(img, (1, 2, 0)), n_segments=150, 
-                                   compactness=30.0, mask=mask, start_label=1, 
+                        # Compactness=50 e n_segments menor para criar blocos maiores e quadrados
+                        seg = slic(np.transpose(img, (1, 2, 0)), n_segments=100, 
+                                   compactness=50.0, mask=mask, start_label=1, 
                                    enforce_connectivity=True)
 
                         if np.any(seg > 0):
@@ -56,7 +55,7 @@ def executar_slic_quadrado():
                             id_offset = np.max(seg)
                             dst.write(seg.astype(np.int32), 1, window=win)
                         gc.collect()
-    print(f"✅ Segmentação concluída: {id_offset} blocos gerados.")
+    print(f"✅ Segmentação em blocos concluída: {id_offset} objetos.")
 
 if __name__ == "__main__":
-    executar_slic_quadrado()
+    executar_slic_blocos_rigidos()

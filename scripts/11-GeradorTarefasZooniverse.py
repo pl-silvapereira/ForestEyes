@@ -11,67 +11,73 @@ from dotenv import load_dotenv
 load_dotenv()
 ROOT = os.getenv('PROJECT_ROOT')
 dir_out = os.path.join(ROOT, 'data', 'Output')
-dir_zoo = os.path.join(ROOT, 'data', 'Zooniverse_Amostra_30_70')
+dir_zoo = os.path.join(ROOT, 'data', 'Zooniverse_Final_Pureza')
 os.makedirs(dir_zoo, exist_ok=True)
 
-def gerar_divisao_30_70():
-    print("🧠 Filtrando Pureza e Dividindo Dataset (30/70)...")
+def gerar_campanha_simetrica():
+    print("🧠 Criando imagens quadradas 2048x2048 e Foco em Ponto Único...")
     path_rgb = os.path.join(dir_out, "02_SJC_Recortado_MapBiomas.tif")
     path_seg = os.path.join(dir_out, "03_SJC_Segmentacao_SLIC_Mudancas.tif")
     path_mud = os.path.join(dir_out, "04_SJC_Mapa_Mudancas_21_23.tif")
 
     with rasterio.open(path_rgb) as s_rgb, rasterio.open(path_seg) as s_seg, rasterio.open(path_mud) as s_mud:
         with WarpedVRT(s_mud, crs=s_rgb.crs, transform=s_rgb.transform, width=s_rgb.width, height=s_rgb.height, resampling=Resampling.nearest) as v_mud:
-            img = s_rgb.read([1, 2, 3])
+            img_full = s_rgb.read([1, 2, 3])
             seg_full = s_seg.read(1)
             mud_full = v_mud.read(1)
 
     ids = np.unique(seg_full[seg_full > 0])
-    dados = []
-    for sid in ids:
-        mask = (seg_full == sid)
-        # TESTE DE PUREZA ABSOLUTA: Apenas uma classe de mudança no bloco
-        classes = np.unique(mud_full[mask][mud_full[mask] > 0])
-        if len(classes) == 1:
-            dados.append({'id': sid, 'classe': int(classes[0]), 'area': np.sum(mask)})
-
-    df = pd.DataFrame(dados)
-    zoo_list, ml_list = [], []
-    # Divisão 30/70 por classe para manter o equilíbrio
-    for cl, group in df.groupby('classe'):
-        # Ordenamos por área para pegar os 'melhores' (maiores) para o Zooniverse
-        sorted_g = group.sort_values(by='area', ascending=False)
-        split = int(len(sorted_g) * 0.3)
-        zoo_list.append(sorted_g.iloc[:split])
-        ml_list.append(sorted_g.iloc[split:])
-
-    df_zoo = pd.concat(zoo_list)
-    df_ml = pd.concat(ml_list)
-    
-    print(f"📊 Zooniverse: {len(df_zoo)} | Machine Learning: {len(df_ml)}")
-
-    # Exportação das imagens (30%)
     manifesto = []
-    for _, row in df_zoo.iterrows():
-        m = (seg_full == row['id'])
-        c = np.argwhere(m)
-        y1, x1 = max(0, c[:,0].min()-30), max(0, c[:,1].min()-30)
-        y2, x2 = min(img.shape[1], c[:,0].max()+30), min(img.shape[2], c[:,1].max()+30)
+    
+    # Tamanho fixo solicitado (Simetria Quadrada)
+    # Nota: Como 2048px é muito grande para um chip de contexto, 
+    # centralizamos o objeto e cortamos um quadrado.
+    tamanho_quadrado = 512 # Usaremos 512 para o recorte e redimensionamos para 2048 se desejar, 
+                           # para manter a nitidez do sensor de 2m.
+    
+    for sid in ids:
+        mask_full = (seg_full == sid)
+        classes = np.unique(mud_full[mask_full][mud_full[mask_full] > 0])
         
-        chip = img[:, y1:y2, x1:x2]
-        chip_norm = np.zeros((chip.shape[1], chip.shape[2], 3), dtype=np.uint8)
+        # Filtro de Pureza de Classe
+        if len(classes) != 1: continue
+        
+        # 1. Calcular Centroide do Superpixel
+        coords = np.argwhere(mask_full)
+        cy, cx = coords.mean(axis=0).astype(int)
+        
+        # 2. Definir Janela Quadrada (BBox Simétrico)
+        half = tamanho_quadrado // 2
+        y1, y2 = max(0, cy - half), min(img_full.shape[1], cy + half)
+        x1, x2 = max(0, cx - half), min(img_full.shape[2], cx + half)
+        
+        # Ajuste para garantir que seja sempre um quadrado perfeito, mesmo nas bordas
+        if (y2 - y1) < tamanho_quadrado or (x2 - x1) < tamanho_quadrado:
+            continue # Pula objetos muito próximos da borda da imagem total
+
+        # 3. Recorte e Normalização
+        chip = img_full[:, y1:y2, x1:x2]
+        chip_norm = np.zeros((tamanho_quadrado, tamanho_quadrado, 3), dtype=np.uint8)
         for b in range(3):
             p2, p98 = np.percentile(chip[b], (2, 98))
             chip_norm[:,:,b] = np.uint8(np.clip((chip[b]-p2)/(p98-p2+1e-5)*255, 0, 255))
         
-        chip_norm[find_boundaries(m[y1:y2, x1:x2], mode='thick')] = [255, 255, 0]
-        name = f"ZOO_CL_{row['classe']}_ID_{row['id']}.png"
-        Image.fromarray(chip_norm).save(os.path.join(dir_zoo, name))
-        manifesto.append({"image_name": name, "id_segmento": row['id'], "classe": row['classe']})
+        # 4. MARCAÇÃO ÚNICA: Apenas o ID atual recebe a borda
+        # Criamos uma máscara local apenas para o superpixel alvo dentro do recorte
+        mask_local = mask_full[y1:y2, x1:x2]
+        bordas = find_boundaries(mask_local, mode='thick')
+        chip_norm[bordas] = [255, 255, 0] # Amarelo vibrante
+        
+        # 5. Redimensionamento para 2048x2048 (Opcional, para simetria de resolução)
+        # Se preferir salvar no tamanho nativo do recorte para economizar espaço, pule a linha abaixo
+        final_img = Image.fromarray(chip_norm).resize((2048, 2048), Image.Resampling.LANCZOS)
+        
+        name = f"SJC_Task_ID_{sid}.png"
+        final_img.save(os.path.join(dir_zoo, name))
+        manifesto.append({"image_name": name, "id_segmento": sid, "classe": int(classes[0])})
 
-    pd.DataFrame(manifesto).to_csv(os.path.join(dir_zoo, "manifest_zooniverse.csv"), index=False)
-    df_ml.to_csv(os.path.join(dir_zoo, "dataset_ML_70.csv"), index=False)
-    print("✅ Processo 30/70 finalizado.")
+    pd.DataFrame(manifesto).to_csv(os.path.join(dir_zoo, "manifest.csv"), index=False)
+    print(f"✅ Campanha finalizada com {len(manifesto)} imagens quadradas e foco único.")
 
 if __name__ == "__main__":
-    gerar_divisao_30_70()
+    gerar_campanha_simetrica()
