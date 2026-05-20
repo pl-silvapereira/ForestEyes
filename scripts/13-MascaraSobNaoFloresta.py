@@ -1,4 +1,5 @@
 import os
+import glob
 import rasterio
 import numpy as np
 from dotenv import load_dotenv
@@ -25,65 +26,80 @@ def gerar_mascara_mapbiomas(input_tif, output_tif):
     florestas = [1, 3, 4, 5, 6, 49]
     veg_herbacea = [10, 11, 12, 32, 50, 13]
     
-    # Junta todos os IDs que vão compor a máscara num único vetor
     ids_mascara = agropecuaria + infra_urbana + agua_rocha + ruido_descartadas
     
     # -------------------------------------------------------------
     # 2. PROCESSAMENTO DA IMAGEM
     # -------------------------------------------------------------
-    with rasterio.open(input_tif) as src:
-        mapbiomas_data = src.read(1)
-        
-        # Cria as 4 matrizes (RGBA) começando com valor 0 (Preto e 100% Transparente)
-        out_r = np.zeros_like(mapbiomas_data, dtype=np.uint8)
-        out_g = np.zeros_like(mapbiomas_data, dtype=np.uint8)
-        out_b = np.zeros_like(mapbiomas_data, dtype=np.uint8)
-        out_a = np.zeros_like(mapbiomas_data, dtype=np.uint8)
-        
-        # Aplica a máscara: onde for da classe de interesse, muda o Alpha para 255 (Opaco)
-        mask_condition = np.isin(mapbiomas_data, ids_mascara)
-        out_a[mask_condition] = 255
-        
-        # Prepara os metadados para salvar em RGBA
-        profile = src.profile
-        profile.update(
-            dtype=rasterio.uint8,
-            count=4, 
-            nodata=None, 
-            photometric='RGB' 
-        )
-        
-        # -------------------------------------------------------------
-        # 3. SALVAR O RESULTADO
-        # -------------------------------------------------------------
-        with rasterio.open(output_tif, 'w', **profile) as dst:
-            dst.write(out_r, 1) # Red (Preto)
-            dst.write(out_g, 2) # Green (Preto)
-            dst.write(out_b, 3) # Blue (Preto)
-            dst.write(out_a, 4) # Alpha (Transparência)
+    try:
+        with rasterio.open(input_tif) as src:
+            mapbiomas_data = src.read(1)
             
-    print(f"Sucesso! Máscara salva em: {output_tif}")
+            # Matrizes RGBA iniciando com valor 0 (Preto e 100% Transparente)
+            out_r = np.zeros_like(mapbiomas_data, dtype=np.uint8)
+            out_g = np.zeros_like(mapbiomas_data, dtype=np.uint8)
+            out_b = np.zeros_like(mapbiomas_data, dtype=np.uint8)
+            out_a = np.zeros_like(mapbiomas_data, dtype=np.uint8)
+            
+            # Aplica a máscara (Muda o Alpha para 255/Opaco nas classes alvo)
+            mask_condition = np.isin(mapbiomas_data, ids_mascara)
+            out_a[mask_condition] = 255
+            
+            profile = src.profile
+            profile.update(
+                dtype=rasterio.uint8,
+                count=4, 
+                nodata=None, 
+                photometric='RGB' 
+            )
+            
+            # -------------------------------------------------------------
+            # 3. SALVAR O RESULTADO
+            # -------------------------------------------------------------
+            with rasterio.open(output_tif, 'w', **profile) as dst:
+                dst.write(out_r, 1) # R
+                dst.write(out_g, 2) # G
+                dst.write(out_b, 3) # B
+                dst.write(out_a, 4) # Alpha
+                
+        print(f"✅ Sucesso! Máscara salva em:\n{output_tif}")
+    except Exception as e:
+        print(f"❌ Erro durante o processamento da imagem: {e}")
 
 # ==========================================
-# EXECUÇÃO E VARIÁVEIS DE AMBIENTE
+# EXECUÇÃO E BUSCA DINÂMICA
 # ==========================================
 if __name__ == "__main__":
-    # 1. Carrega as variáveis do arquivo .env
+    # 1. Carrega as configurações (Igual ao Script 02)
     load_dotenv()
+    ROOT = os.getenv('PROJECT_ROOT')
     
-    # 2. Busca o caminho do diretório de dados (ajuste o nome da variável se necessário)
-    # Se a variável 'DATA_DIR' não existir no .env, ele usa a pasta atual ('./data') como padrão seguro
-    DATA_DIR = os.getenv("DATA_DIR", "./data")
+    if not ROOT:
+        print("❌ Erro: Variável 'PROJECT_ROOT' não encontrada no .env.")
+        exit()
+
+    # 2. Define os diretórios base
+    mapbiomas_dir = os.path.join(ROOT, 'data', 'MapBiomas')
+    pasta_saida = os.path.join(ROOT, 'data', 'Output')
     
-    # 3. Monta os caminhos completos e dinâmicos de entrada e saída
-    ARQUIVO_ENTRADA = os.path.join(DATA_DIR, "mapbiomas_2021.tif")
+    # 3. Busca dinâmica pelo arquivo TIF (procurando por arquivos do MapBiomas contendo 2021)
+    print("=== Buscando Arquivo MapBiomas de 2021 ===")
+    busca = glob.glob(os.path.join(mapbiomas_dir, "*2021*coverage*10m*.tif"))
     
-    # Cria uma pasta 'Output' dentro da sua pasta de dados do Drive/Local
-    PASTA_SAIDA = os.path.join(DATA_DIR, "Output")
-    ARQUIVO_SAIDA = os.path.join(PASTA_SAIDA, "mascara_analise_2021.tif")
+    # Fallback: Se não achar com "2021" no nome, tenta a busca genérica do Script 02
+    if not busca:
+        busca = glob.glob(os.path.join(mapbiomas_dir, "*coverage_10m*.tif"))
+        
+    if not busca:
+        print(f"❌ Erro: Nenhum arquivo '*coverage_10m*.tif' encontrado em {mapbiomas_dir}")
+        exit()
+        
+    # Pega o primeiro arquivo retornado pela busca
+    ARQUIVO_ENTRADA = busca[0]
+    print(f"🔍 Arquivo encontrado: {os.path.basename(ARQUIVO_ENTRADA)}")
     
-    # Certifica-se de que a pasta de saída existe antes de salvar
-    os.makedirs(PASTA_SAIDA, exist_ok=True)
+    # 4. Configura a saída e executa
+    ARQUIVO_SAIDA = os.path.join(pasta_saida, "mascara_analise_2021.tif")
+    os.makedirs(pasta_saida, exist_ok=True)
     
-    # 4. Executa a função
     gerar_mascara_mapbiomas(ARQUIVO_ENTRADA, ARQUIVO_SAIDA)
