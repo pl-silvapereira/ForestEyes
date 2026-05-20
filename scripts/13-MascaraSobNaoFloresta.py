@@ -1,6 +1,7 @@
+import os
 import rasterio
 import numpy as np
-import os
+from dotenv import load_dotenv
 
 def gerar_mascara_mapbiomas(input_tif, output_tif):
     """
@@ -17,10 +18,10 @@ def gerar_mascara_mapbiomas(input_tif, output_tif):
     # Classes que SERÃO a máscara (Cor Preta)
     agropecuaria = [14, 15, 18, 19, 39, 20, 40, 62, 41, 36, 46, 47, 35, 48, 9, 21]
     infra_urbana = [24]
-    agua_rocha = [26, 33, 31, 29] # 29 é Afloramento Rochoso, 33/31 Água
+    agua_rocha = [26, 33, 31, 29] 
     ruido_descartadas = [27]
     
-    # Classes que ficarão TRANSPARENTES (Você não precisa delas na máscara)
+    # Classes que ficarão TRANSPARENTES
     florestas = [1, 3, 4, 5, 6, 49]
     veg_herbacea = [10, 11, 12, 32, 50, 13]
     
@@ -31,29 +32,25 @@ def gerar_mascara_mapbiomas(input_tif, output_tif):
     # 2. PROCESSAMENTO DA IMAGEM
     # -------------------------------------------------------------
     with rasterio.open(input_tif) as src:
-        # Lê a banda 1 (dados com os IDs do MapBiomas)
         mapbiomas_data = src.read(1)
         
-        # Cria as 4 matrizes para a imagem final (R, G, B, Alpha)
-        # Ao usar np.zeros, todos já começam com valor 0.
-        # Ou seja: R=0, G=0, B=0 (Preto) e A=0 (100% Transparente)
+        # Cria as 4 matrizes (RGBA) começando com valor 0 (Preto e 100% Transparente)
         out_r = np.zeros_like(mapbiomas_data, dtype=np.uint8)
         out_g = np.zeros_like(mapbiomas_data, dtype=np.uint8)
         out_b = np.zeros_like(mapbiomas_data, dtype=np.uint8)
         out_a = np.zeros_like(mapbiomas_data, dtype=np.uint8)
         
-        # Encontra todos os pixels que têm valor igual aos IDs da máscara
-        # Onde for verdadeiro, nós mudamos o Alpha para 255 (Fica Opaco)
+        # Aplica a máscara: onde for da classe de interesse, muda o Alpha para 255 (Opaco)
         mask_condition = np.isin(mapbiomas_data, ids_mascara)
         out_a[mask_condition] = 255
         
-        # Prepara os metadados para salvar o novo TIF em formato RGBA
+        # Prepara os metadados para salvar em RGBA
         profile = src.profile
         profile.update(
             dtype=rasterio.uint8,
-            count=4, # 4 bandas ao invés de 1
-            nodata=None, # O canal Alpha assume o papel do "nodata"
-            photometric='RGB' # QGIS/Softwares vão entender como imagem colorida c/ transparência
+            count=4, 
+            nodata=None, 
+            photometric='RGB' 
         )
         
         # -------------------------------------------------------------
@@ -63,19 +60,30 @@ def gerar_mascara_mapbiomas(input_tif, output_tif):
             dst.write(out_r, 1) # Red (Preto)
             dst.write(out_g, 2) # Green (Preto)
             dst.write(out_b, 3) # Blue (Preto)
-            dst.write(out_a, 4) # Transparência (0 ou 255)
+            dst.write(out_a, 4) # Alpha (Transparência)
             
     print(f"Sucesso! Máscara salva em: {output_tif}")
 
 # ==========================================
-# COMO EXECUTAR O SCRIPT
+# EXECUÇÃO E VARIÁVEIS DE AMBIENTE
 # ==========================================
 if __name__ == "__main__":
-    # Substitua pelos caminhos reais do seu Google Drive/Computador
-    ARQUIVO_ENTRADA = "data/mapbiomas_2021.tif" 
-    ARQUIVO_SAIDA = "Output/mascara_analise_2021.tif"
+    # 1. Carrega as variáveis do arquivo .env
+    load_dotenv()
     
-    # Certifica-se de que a pasta de saída existe (caso não, o Python cria)
-    os.makedirs(os.path.dirname(ARQUIVO_SAIDA), exist_ok=True)
+    # 2. Busca o caminho do diretório de dados (ajuste o nome da variável se necessário)
+    # Se a variável 'DATA_DIR' não existir no .env, ele usa a pasta atual ('./data') como padrão seguro
+    DATA_DIR = os.getenv("DATA_DIR", "./data")
     
+    # 3. Monta os caminhos completos e dinâmicos de entrada e saída
+    ARQUIVO_ENTRADA = os.path.join(DATA_DIR, "mapbiomas_2021.tif")
+    
+    # Cria uma pasta 'Output' dentro da sua pasta de dados do Drive/Local
+    PASTA_SAIDA = os.path.join(DATA_DIR, "Output")
+    ARQUIVO_SAIDA = os.path.join(PASTA_SAIDA, "mascara_analise_2021.tif")
+    
+    # Certifica-se de que a pasta de saída existe antes de salvar
+    os.makedirs(PASTA_SAIDA, exist_ok=True)
+    
+    # 4. Executa a função
     gerar_mascara_mapbiomas(ARQUIVO_ENTRADA, ARQUIVO_SAIDA)
