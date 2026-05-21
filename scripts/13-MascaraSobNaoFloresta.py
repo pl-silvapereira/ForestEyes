@@ -2,9 +2,10 @@ import os
 import glob
 import rasterio
 import numpy as np
+from PIL import Image
 from dotenv import load_dotenv
 
-def gerar_mascara_mapbiomas(input_tif, output_tif):
+def gerar_mascara_png(input_tif, output_png):
     print(f"Lendo o arquivo: {input_tif}...")
     
     # -------------------------------------------------------------
@@ -21,41 +22,43 @@ def gerar_mascara_mapbiomas(input_tif, output_tif):
         with rasterio.open(input_tif) as src:
             mapbiomas_data = src.read(1)
             
-            # -------------------------------------------------------------
-            # 2. PROCESSAMENTO RGBA (Força a cor preta automática no QGIS)
-            # -------------------------------------------------------------
+            # Cria uma matriz 3D para a imagem (Altura, Largura, 4 canais RGBA)
+            # O padrão é iniciar tudo com 0, ou seja: (0,0,0,0) = Preto 100% Transparente
+            rgba_image = np.zeros((mapbiomas_data.shape[0], mapbiomas_data.shape[1], 4), dtype=np.uint8)
             
-            # Canais R, G e B começam totalmente zerados (Preto absoluto)
-            out_r = np.zeros_like(mapbiomas_data, dtype=np.uint8)
-            out_g = np.zeros_like(mapbiomas_data, dtype=np.uint8)
-            out_b = np.zeros_like(mapbiomas_data, dtype=np.uint8)
-            
-            # Canal Alpha (Transparência) começa zerado (100% invisível)
-            out_a = np.zeros_like(mapbiomas_data, dtype=np.uint8)
-            
-            # Aplica a máscara: Apenas onde for área de interesse, o Alpha vai para 255 (Opaco)
+            # Encontra onde estão os pixels da máscara
             mask_condition = np.isin(mapbiomas_data, ids_mascara)
-            out_a[mask_condition] = 255
             
-            # Prepara os metadados para salvar como RGBA
-            profile = src.profile
-            profile.update(
-                dtype=rasterio.uint8,
-                count=4,  # Mudamos para 4 bandas
-                nodata=None, # O QGIS usará o canal Alpha como transparência nativa
-                photometric='RGB' 
-            )
+            # ONDE FOR MÁSCARA: Pintamos de preto opaco (R=0, G=0, B=0, Alpha=255)
+            rgba_image[mask_condition] = [0, 0, 0, 255]
             
             # -------------------------------------------------------------
-            # 3. SALVAR O RESULTADO
+            # 2. SALVAR A IMAGEM PNG COM A BIBLIOTECA PILLOW (PIL)
             # -------------------------------------------------------------
-            with rasterio.open(output_tif, 'w', **profile) as dst:
-                dst.write(out_r, 1) # R (Sempre 0)
-                dst.write(out_g, 2) # G (Sempre 0)
-                dst.write(out_b, 3) # B (Sempre 0)
-                dst.write(out_a, 4) # Alpha (0 para fundo, 255 para a máscara)
+            img = Image.fromarray(rgba_image, 'RGBA')
+            img.save(output_png)
+            
+            # -------------------------------------------------------------
+            # 3. CRIAR O ARQUIVO .PGW (Georreferenciamento para o QGIS)
+            # -------------------------------------------------------------
+            pgw_path = output_png.replace('.png', '.pgw')
+            transform = src.transform
+            
+            # O World File exige o centro do pixel superior esquerdo
+            x_center = transform.c + (transform.a / 2)
+            y_center = transform.f + (transform.e / 2)
+            
+            with open(pgw_path, 'w') as f:
+                f.write(f"{transform.a}\n")  # Tamanho do pixel (X)
+                f.write(f"{transform.d}\n")  # Rotação (Y)
+                f.write(f"{transform.b}\n")  # Rotação (X)
+                f.write(f"{transform.e}\n")  # Tamanho do pixel (Y - negativo)
+                f.write(f"{x_center}\n")     # Coordenada X
+                f.write(f"{y_center}\n")     # Coordenada Y
                 
-        print(f"✅ Sucesso! Máscara preta sólida automática salva em:\n{output_tif}")
+        print(f"✅ Sucesso! Máscara visual salva em:\n{output_png}")
+        print(f"✅ Georreferenciamento salvo em:\n{pgw_path}")
+        
     except Exception as e:
         print(f"❌ Erro durante o processamento da imagem: {e}")
 
@@ -86,7 +89,8 @@ if __name__ == "__main__":
     ARQUIVO_ENTRADA = busca[0]
     print(f"🔍 Arquivo encontrado: {os.path.basename(ARQUIVO_ENTRADA)}")
     
-    ARQUIVO_SAIDA = os.path.join(pasta_saida, "mascara_analise_2021_final.tif")
+    # Arquivo agora salvo como .png
+    ARQUIVO_SAIDA = os.path.join(pasta_saida, "mascara_analise_2021_final.png")
     os.makedirs(pasta_saida, exist_ok=True)
     
-    gerar_mascara_mapbiomas(ARQUIVO_ENTRADA, ARQUIVO_SAIDA)
+    gerar_mascara_png(ARQUIVO_ENTRADA, ARQUIVO_SAIDA)
