@@ -21,37 +21,41 @@ def gerar_mascara_mapbiomas(input_tif, output_tif):
         with rasterio.open(input_tif) as src:
             mapbiomas_data = src.read(1)
             
-            # Cria a matriz base preenchida com 0 (0 será o fundo transparente/NODATA)
-            out_data = np.zeros_like(mapbiomas_data, dtype=np.uint8)
+            # -------------------------------------------------------------
+            # 2. PROCESSAMENTO RGBA (Força a cor preta automática no QGIS)
+            # -------------------------------------------------------------
             
-            # ONDE FOR MÁSCARA: Padronizamos tudo para o valor 1
+            # Canais R, G e B começam totalmente zerados (Preto absoluto)
+            out_r = np.zeros_like(mapbiomas_data, dtype=np.uint8)
+            out_g = np.zeros_like(mapbiomas_data, dtype=np.uint8)
+            out_b = np.zeros_like(mapbiomas_data, dtype=np.uint8)
+            
+            # Canal Alpha (Transparência) começa zerado (100% invisível)
+            out_a = np.zeros_like(mapbiomas_data, dtype=np.uint8)
+            
+            # Aplica a máscara: Apenas onde for área de interesse, o Alpha vai para 255 (Opaco)
             mask_condition = np.isin(mapbiomas_data, ids_mascara)
-            out_data[mask_condition] = 1
+            out_a[mask_condition] = 255
             
-            # Prepara os metadados
+            # Prepara os metadados para salvar como RGBA
             profile = src.profile
             profile.update(
                 dtype=rasterio.uint8,
-                count=1, 
-                nodata=0  # Define 0 como invisível no QGIS
+                count=4,  # Mudamos para 4 bandas
+                nodata=None, # O QGIS usará o canal Alpha como transparência nativa
+                photometric='RGB' 
             )
             
             # -------------------------------------------------------------
-            # 2. SALVAR COM PALETA PRETA CUSTOMIZADA
+            # 3. SALVAR O RESULTADO
             # -------------------------------------------------------------
             with rasterio.open(output_tif, 'w', **profile) as dst:
-                dst.write(out_data, 1)
+                dst.write(out_r, 1) # R (Sempre 0)
+                dst.write(out_g, 2) # G (Sempre 0)
+                dst.write(out_b, 3) # B (Sempre 0)
+                dst.write(out_a, 4) # Alpha (0 para fundo, 255 para a máscara)
                 
-                # Criamos um "Mapa de Cores" manual.
-                # Formato: {valor_do_pixel: (Red, Green, Blue, Alpha)}
-                # 0 = Preto (R=0, G=0, B=0) com Opacidade Máxima (Alpha=255)
-                colormap = {
-                    1: (0, 0, 0, 255)
-                }
-                
-                dst.write_colormap(1, colormap)
-                
-        print(f"✅ Sucesso! Máscara preta sólida salva em:\n{output_tif}")
+        print(f"✅ Sucesso! Máscara preta sólida automática salva em:\n{output_tif}")
     except Exception as e:
         print(f"❌ Erro durante o processamento da imagem: {e}")
 
@@ -82,8 +86,7 @@ if __name__ == "__main__":
     ARQUIVO_ENTRADA = busca[0]
     print(f"🔍 Arquivo encontrado: {os.path.basename(ARQUIVO_ENTRADA)}")
     
-    # Atualizado o nome do arquivo de saída para refletir a máscara final
-    ARQUIVO_SAIDA = os.path.join(pasta_saida, "mascara_analise_2021_preta.tif")
+    ARQUIVO_SAIDA = os.path.join(pasta_saida, "mascara_analise_2021_final.tif")
     os.makedirs(pasta_saida, exist_ok=True)
     
     gerar_mascara_mapbiomas(ARQUIVO_ENTRADA, ARQUIVO_SAIDA)
