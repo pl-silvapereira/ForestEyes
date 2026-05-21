@@ -2,11 +2,13 @@ import os
 import glob
 import rasterio
 import numpy as np
+import geopandas as gpd
+from rasterio.features import shapes
 from PIL import Image
 from dotenv import load_dotenv
 
-def gerar_mascara_png(input_tif, output_png):
-    print(f"Lendo o arquivo: {input_tif}...")
+def gerar_mascara_completa(input_tif, output_png, output_shp):
+    print(f"A ler o ficheiro: {input_tif}...")
     
     # -------------------------------------------------------------
     # 1. DEFINIÇÃO DAS CLASSES 
@@ -21,46 +23,74 @@ def gerar_mascara_png(input_tif, output_png):
     try:
         with rasterio.open(input_tif) as src:
             mapbiomas_data = src.read(1)
+            crs = src.crs
+            transform = src.transform
             
-            # Cria uma matriz 3D para a imagem (Altura, Largura, 4 canais RGBA)
-            # O padrão é iniciar tudo com 0, ou seja: (0,0,0,0) = Preto 100% Transparente
-            rgba_image = np.zeros((mapbiomas_data.shape[0], mapbiomas_data.shape[1], 4), dtype=np.uint8)
-            
-            # Encontra onde estão os pixels da máscara
+            print("A calcular a localização da máscara...")
+            # Encontra onde estão os píxeis de interesse apenas uma vez
             mask_condition = np.isin(mapbiomas_data, ids_mascara)
             
-            # ONDE FOR MÁSCARA: Pintamos de preto opaco (R=0, G=0, B=0, Alpha=255)
+            # =========================================================
+            # PARTE A: GERAR O PNG E O GEORREFERENCIAMENTO (.PGW)
+            # =========================================================
+            print("A gerar a imagem PNG e o ficheiro World File (.pgw)...")
+            
+            # Cria a matriz RGBA iniciando a 0 (Transparente)
+            rgba_image = np.zeros((mapbiomas_data.shape[0], mapbiomas_data.shape[1], 4), dtype=np.uint8)
+            
+            # Pinta a máscara de Preto Opaco
             rgba_image[mask_condition] = [0, 0, 0, 255]
             
-            # -------------------------------------------------------------
-            # 2. SALVAR A IMAGEM PNG COM A BIBLIOTECA PILLOW (PIL)
-            # -------------------------------------------------------------
+            # Guarda o PNG
             img = Image.fromarray(rgba_image, 'RGBA')
             img.save(output_png)
             
-            # -------------------------------------------------------------
-            # 3. CRIAR O ARQUIVO .PGW (Georreferenciamento para o QGIS)
-            # -------------------------------------------------------------
+            # Guarda o ficheiro de coordenadas (PGW)
             pgw_path = output_png.replace('.png', '.pgw')
-            transform = src.transform
-            
-            # O World File exige o centro do pixel superior esquerdo
             x_center = transform.c + (transform.a / 2)
             y_center = transform.f + (transform.e / 2)
             
             with open(pgw_path, 'w') as f:
-                f.write(f"{transform.a}\n")  # Tamanho do pixel (X)
-                f.write(f"{transform.d}\n")  # Rotação (Y)
-                f.write(f"{transform.b}\n")  # Rotação (X)
-                f.write(f"{transform.e}\n")  # Tamanho do pixel (Y - negativo)
-                f.write(f"{x_center}\n")     # Coordenada X
-                f.write(f"{y_center}\n")     # Coordenada Y
+                f.write(f"{transform.a}\n")  
+                f.write(f"{transform.d}\n")  
+                f.write(f"{transform.b}\n")  
+                f.write(f"{transform.e}\n")  
+                f.write(f"{x_center}\n")     
+                f.write(f"{y_center}\n")     
                 
-        print(f"✅ Sucesso! Máscara visual salva em:\n{output_png}")
-        print(f"✅ Georreferenciamento salvo em:\n{pgw_path}")
+            print(f"✅ Ficheiros PNG e PGW guardados com sucesso!")
+
+            # =========================================================
+            # PARTE B: GERAR O SHAPEFILE VETORIAL (.SHP)
+            # =========================================================
+            print("A extrair polígonos para o Shapefile (isto pode demorar alguns segundos)...")
+            
+            # Cria a matriz binária (1 para máscara, 0 para o resto) necessária para a vetorização
+            mask_bin = np.zeros_like(mapbiomas_data, dtype=np.uint8)
+            mask_bin[mask_condition] = 1
+            
+            geometrias = []
+            for geom, value in shapes(mask_bin, mask=(mask_bin == 1), transform=transform):
+                geometrias.append({
+                    'geometry': geom,
+                    'properties': {'classe': 'mascara'}
+                })
         
+            if not geometrias:
+                print("❌ Nenhuma área de máscara encontrada para gerar o Shapefile.")
+            else:
+                print("A compilar e a guardar o ficheiro Shapefile...")
+                gdf = gpd.GeoDataFrame.from_features(geometrias)
+                gdf.set_crs(crs, inplace=True) 
+                
+                # Guarda no formato Shapefile do ESRI
+                gdf.to_file(output_shp, driver='ESRI Shapefile')
+                print(f"✅ Shapefile (.shp) guardado com sucesso!")
+                
+            print(f"\n🎉 Processo concluído! Os ficheiros estão na pasta: {os.path.dirname(output_png)}")
+            
     except Exception as e:
-        print(f"❌ Erro durante o processamento da imagem: {e}")
+        print(f"❌ Erro durante o processamento: {e}")
 
 # ==========================================
 # EXECUÇÃO E BUSCA DINÂMICA
@@ -70,27 +100,29 @@ if __name__ == "__main__":
     ROOT = os.getenv('PROJECT_ROOT')
     
     if not ROOT:
-        print("❌ Erro: Variável 'PROJECT_ROOT' não encontrada no .env.")
+        print("❌ Erro: Variável 'PROJECT_ROOT' não encontrada no ficheiro .env.")
         exit()
 
     mapbiomas_dir = os.path.join(ROOT, 'data', 'MapBiomas')
     pasta_saida = os.path.join(ROOT, 'data', 'Output')
     
-    print("=== Buscando Arquivo MapBiomas de 2021 ===")
+    print("=== A buscar o ficheiro MapBiomas de 2021 ===")
     busca = glob.glob(os.path.join(mapbiomas_dir, "*2021*coverage*10m*.tif"))
     
     if not busca:
         busca = glob.glob(os.path.join(mapbiomas_dir, "*coverage_10m*.tif"))
         
     if not busca:
-        print(f"❌ Erro: Nenhum arquivo '*coverage_10m*.tif' encontrado em {mapbiomas_dir}")
+        print(f"❌ Erro: Nenhum ficheiro '*coverage_10m*.tif' encontrado na pasta {mapbiomas_dir}")
         exit()
         
     ARQUIVO_ENTRADA = busca[0]
-    print(f"🔍 Arquivo encontrado: {os.path.basename(ARQUIVO_ENTRADA)}")
+    print(f"🔍 Ficheiro encontrado: {os.path.basename(ARQUIVO_ENTRADA)}")
     
-    # Arquivo agora salvo como .png
-    ARQUIVO_SAIDA = os.path.join(pasta_saida, "mascara_analise_2021_final.png")
+    # Define os caminhos de saída para ambos os formatos
+    ARQUIVO_SAIDA_PNG = os.path.join(pasta_saida, "mascara_analise_2021.png")
+    ARQUIVO_SAIDA_SHP = os.path.join(pasta_saida, "mascara_analise_2021.shp")
+    
     os.makedirs(pasta_saida, exist_ok=True)
     
-    gerar_mascara_png(ARQUIVO_ENTRADA, ARQUIVO_SAIDA)
+    gerar_mascara_completa(ARQUIVO_ENTRADA, ARQUIVO_SAIDA_PNG, ARQUIVO_SAIDA_SHP)
