@@ -8,8 +8,9 @@ from skimage.segmentation import slic, find_boundaries
 from scipy.ndimage import label, find_objects
 from dotenv import load_dotenv
 import gc
+import time
 
-def executar_mapa_tematico_verde_vermelho():
+def executar_mapa_tematico_ultrarrapido():
     load_dotenv()
     ROOT = os.getenv('PROJECT_ROOT')
     if not ROOT:
@@ -19,7 +20,6 @@ def executar_mapa_tematico_verde_vermelho():
     dir_mapbiomas = os.path.join(ROOT, 'data', 'MapBiomas')
     dir_output = os.path.join(ROOT, 'data', 'Output')
 
-    # Arquivos de Entrada e Saída
     imagem_sat_path = os.path.join(dir_output, "02_SJC_Recortado_MapBiomas.tif")
     saida_visual = os.path.join(dir_output, "15_SJC_Mapa_Verde_Vermelho_Segmentado.tif")
 
@@ -33,9 +33,9 @@ def executar_mapa_tematico_verde_vermelho():
     mapbiomas_path = busca[0]
 
     # -------------------------------------------------------------
-    # 1. LEITURA DE METADADOS E ALINHAMENTO DO MAPBIOMAS
+    # 1. PREPARAÇÃO DA BASE
     # -------------------------------------------------------------
-    print("1/4 - Preparando metadados e alinhando classes do MapBiomas...")
+    print("1/4 - Preparando metadados e alinhando classes...")
     with rasterio.open(imagem_sat_path) as sat_src:
         meta_sat = sat_src.meta.copy()
         height, width = sat_src.height, sat_src.width
@@ -54,9 +54,9 @@ def executar_mapa_tematico_verde_vermelho():
         )
 
     # -------------------------------------------------------------
-    # 2. DEFINIÇÃO DAS CORES CHAPADAS (A BASE DO MAPA)
+    # 2. DEFINIÇÃO DAS CORES (VERDE, VERMELHO, PRETO)
     # -------------------------------------------------------------
-    print("2/4 - Criando o Fundo Sólido (Verde = Floresta, Vermelho = Não Floresta, Preto = Máscara)...")
+    print("2/4 - Criando o Fundo Sólido (Floresta/Não-Floresta/Máscara)...")
     ids_floresta = [1, 3, 4, 5, 6, 49]
     ids_nao_floresta = [10, 11, 12, 32, 50, 13]
     
@@ -64,28 +64,38 @@ def executar_mapa_tematico_verde_vermelho():
     mask_nao_floresta = np.isin(mb_aligned, ids_nao_floresta)
     mask_segmentacao = mask_floresta | mask_nao_floresta
 
-    # Inicia a tela RGB que será exportada (Tudo que é 0 continua Preto Absoluto)
     rgb_out = np.zeros((height, width, 3), dtype=np.uint8)
-    rgb_out[mask_floresta] = [0, 255, 0]      # Pinta Floresta de Verde
-    rgb_out[mask_nao_floresta] = [255, 0, 0]  # Pinta Formação Natural de Vermelho
+    rgb_out[mask_floresta] = [0, 255, 0]      # Verde
+    rgb_out[mask_nao_floresta] = [255, 0, 0]  # Vermelho
     
     del mb_aligned
     gc.collect()
 
     # -------------------------------------------------------------
-    # 3. SEGMENTAÇÃO DINÂMICA (SEM TRAVAR A MEMÓRIA)
+    # 3. SEGMENTAÇÃO INTELIGENTE (BYPASS DE MICRO-ILHAS)
     # -------------------------------------------------------------
-    print("3/4 - Mapeando as ilhas de vegetação para cálculo dos superpixels...")
+    print("3/4 - Mapeando as ilhas de vegetação...")
     
     ilhas, num_ilhas = label(mask_segmentacao)
     caixas = find_objects(ilhas)
     
-    print(f"-> {num_ilhas} ilhas isoladas encontradas. Iniciando a segmentação...")
-
     total_pixels_alvo = np.sum(mask_segmentacao)
-    ilhas_processadas = 0
+    ALVO_SUPERPIXELS = 15000
+    
+    # Descobre o tamanho médio esperado de 1 superpixel
+    tamanho_medio_sp = max(100, int(total_pixels_alvo / ALVO_SUPERPIXELS))
+    
+    print(f"-> {num_ilhas} ilhas isoladas encontradas.")
+    print(f"-> Tamanho médio de 1 superpixel: ~{tamanho_medio_sp} pixels.")
+    print("-> Iniciando processamento...")
 
-    # Abre a imagem CBERS, mas lê APENAS pequenos blocos por vez
+    ilhas_processadas = 0
+    ilhas_ignoradas_ruido = 0
+    ilhas_bypass_rapido = 0
+    ilhas_slic_pesado = 0
+    
+    start_time = time.time()
+
     with rasterio.open(imagem_sat_path) as sat_src:
         for i, slc in enumerate(caixas):
             if slc is None:
@@ -94,58 +104,67 @@ def executar_mapa_tematico_verde_vermelho():
             patch_mask = (ilhas[slc] == (i + 1))
             patch_area = np.sum(patch_mask)
 
-            # Ignora pontos minúsculos que não formam um superpixel real
+            # 1. Filtro de Ruído: Se for quase invisível, nem contorna
             if patch_area < 50:
+                ilhas_ignoradas_ruido += 1
+                ilhas_processadas += 1
                 continue
 
-            ilhas_processadas += 1
+            # 2. BYPASS RÁPIDO: Se a ilha for menor que 1 superpixel, a ilha inteira é o superpixel!
+            if patch_area <= tamanho_medio_sp:
+                ilhas_bypass_rapido += 1
+                # Simula um superpixel sem rodar o algoritmo ou ler a imagem CBERS
+                seg_patch = np.zeros_like(patch_mask, dtype=np.int32)
+                seg_patch[patch_mask] = 1
             
-            # Carrega da memória do HD apenas o retângulo exato da ilha atual
-            window = Window.from_slices(slc[0], slc[1])
-            patch_sat = sat_src.read((1,2,3), window=window)
-            patch_sat = np.moveaxis(patch_sat, 0, -1).astype(np.float32)
-            
-            # Normaliza as cores do pequeno bloco para o algoritmo entender
-            for b in range(patch_sat.shape[2]):
-                p99 = np.percentile(patch_sat[:,:,b], 99)
-                if p99 > 0:
-                    patch_sat[:,:,b] = np.clip((patch_sat[:,:,b] / p99) * 255.0, 0, 255.0)
-            patch_sat = patch_sat.astype(np.uint8)
+            # 3. SLIC PESADO: Rodar a IA apenas nas matas e florestas grandes
+            else:
+                ilhas_slic_pesado += 1
+                window = Window.from_slices(slc[0], slc[1])
+                patch_sat = sat_src.read((1,2,3), window=window)
+                patch_sat = np.moveaxis(patch_sat, 0, -1).astype(np.float32)
+                
+                for b in range(patch_sat.shape[2]):
+                    p99 = np.percentile(patch_sat[:,:,b], 99)
+                    if p99 > 0:
+                        patch_sat[:,:,b] = np.clip((patch_sat[:,:,b] / p99) * 255.0, 0, 255.0)
+                patch_sat = patch_sat.astype(np.uint8)
 
-            n_seg_patch = max(1, int(15000 * (patch_area / total_pixels_alvo)))
+                n_seg_patch = max(2, int(patch_area / tamanho_medio_sp))
 
-            # Executa o MaskSLIC restrito a esta ilha específica
-            seg_patch = slic(
-                patch_sat, 
-                n_segments=n_seg_patch, 
-                compactness=10.0, 
-                mask=patch_mask, 
-                convert2lab=False, 
-                enforce_connectivity=False, 
-                max_num_iter=5,
-                start_label=1
-            )
-            
-            # Procura os contornos dos superpixels gerados
+                seg_patch = slic(
+                    patch_sat, 
+                    n_segments=n_seg_patch, 
+                    compactness=10.0, 
+                    mask=patch_mask, 
+                    convert2lab=False, 
+                    enforce_connectivity=False, 
+                    max_num_iter=5,
+                    start_label=1
+                )
+
+            # Desenha a borda da ilha processada (Amarelo)
             borders = find_boundaries(seg_patch, mode='inner', background=0)
-            
-            # Desenha os contornos (em Amarelo) DIRETAMENTE sobre a tela Verde/Vermelha
-            # Utilizamos o Amarelo [255, 255, 0] para dar um alto contraste contra as cores base
             rgb_patch = rgb_out[slc]
             rgb_patch[borders] = [255, 255, 0]
             rgb_out[slc] = rgb_patch
 
-            # Mostra o progresso no console para você saber que não travou
-            if ilhas_processadas % 20 == 0 or ilhas_processadas == num_ilhas:
-                print(f"   Progresso: {ilhas_processadas}/{num_ilhas} ilhas processadas...")
+            ilhas_processadas += 1
+            if ilhas_processadas % 1000 == 0:
+                print(f"   [{ilhas_processadas}/{num_ilhas}] Processadas... (Bypass: {ilhas_bypass_rapido} | SLIC: {ilhas_slic_pesado})")
 
+    tempo_total = round(time.time() - start_time, 1)
+    
     del ilhas, caixas
     gc.collect()
 
+    print(f"\n✅ Passo 3 Concluído em {tempo_total} segundos!")
+    print(f"Estatísticas: {ilhas_bypass_rapido} resolvidas instantaneamente, e apenas {ilhas_slic_pesado} precisaram do CBERS.")
+
     # -------------------------------------------------------------
-    # 4. SALVANDO O MAPA FINAL
+    # 4. SALVAR RESULTADO
     # -------------------------------------------------------------
-    print("4/4 - Salvando o mapa temático final...")
+    print("4/4 - Salvando a imagem final...")
     meta_sat.update({
         "dtype": rasterio.uint8, 
         "count": 3, 
@@ -157,7 +176,7 @@ def executar_mapa_tematico_verde_vermelho():
         for b in range(3):
             dst_vis.write(rgb_out[:, :, b], b+1)
 
-    print(f"\n🎉 Sucesso! Mapa gerado com precisão e salvo em:\n{saida_visual}")
+    print(f"🎉 Processo perfeito concluído! Arquivo salvo em:\n{saida_visual}")
 
 if __name__ == "__main__":
-    executar_mapa_tematico_verde_vermelho()
+    executar_mapa_tematico_ultrarrapido()
