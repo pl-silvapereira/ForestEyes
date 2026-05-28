@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 import gc
 import time
 
-def gerar_metricas_segmentacao():
+def gerar_metricas_segmentacao_turbo():
     load_dotenv()
     ROOT = os.getenv('PROJECT_ROOT')
     if not ROOT:
@@ -23,7 +23,6 @@ def gerar_metricas_segmentacao():
 
     imagem_sat_path = os.path.join(dir_output, "02_SJC_Recortado_MapBiomas.tif")
     
-    # ---- NOVAS SAÍDAS ----
     saida_visual = os.path.join(dir_output, "17_SJC_Mapa_Segmentado.tif")
     saida_npy = os.path.join(dir_output, "17_SJC_Matriz_Segmentacao.npy")
     saida_csv = os.path.join(dir_output, "17_SJC_Estatisticas_Superpixels.csv")
@@ -34,7 +33,7 @@ def gerar_metricas_segmentacao():
     mapbiomas_path = busca[0]
 
     # -------------------------------------------------------------
-    # 1. ALINHAMENTO DO MAPBIOMAS
+    # 1. PREPARAÇÃO
     # -------------------------------------------------------------
     print("1/4 - Preparando metadados e alinhando classes...")
     with rasterio.open(imagem_sat_path) as sat_src:
@@ -54,9 +53,6 @@ def gerar_metricas_segmentacao():
             resampling=Resampling.nearest
         )
 
-    # -------------------------------------------------------------
-    # 2. DEFINIÇÃO DAS MÁSCARAS
-    # -------------------------------------------------------------
     ids_floresta = [1, 3, 4, 5, 6, 49]
     ids_nao_floresta = [10, 11, 12, 32, 50, 13]
     
@@ -72,10 +68,9 @@ def gerar_metricas_segmentacao():
     gc.collect()
 
     # -------------------------------------------------------------
-    # 3. SEGMENTAÇÃO E EXTRAÇÃO DE MÉTRICAS (VETORIZADA)
+    # 2. SEGMENTAÇÃO RÁPIDA (CARIMBO)
     # -------------------------------------------------------------
-    print("2/4 - Mapeando ilhas e extraindo métricas matemáticas...")
-    
+    print("2/4 - Mapeando ilhas para segmentação...")
     ilhas, num_ilhas = label(mask_segmentacao)
     caixas = find_objects(ilhas)
     
@@ -83,11 +78,10 @@ def gerar_metricas_segmentacao():
     ALVO_SUPERPIXELS = 15000
     tamanho_medio_sp = max(100, int(total_pixels_alvo / ALVO_SUPERPIXELS))
     
-    # Estruturas Globais
     global_segments = np.zeros((height, width), dtype=np.int32)
     global_id_offset = 0
-    estatisticas_lista = []
     
+    print(f"-> Encontradas {num_ilhas} ilhas. Iniciando algoritmos de corte...")
     ilhas_processadas = 0
     start_time = time.time()
 
@@ -100,12 +94,15 @@ def gerar_metricas_segmentacao():
             patch_area = np.sum(patch_mask)
 
             if patch_area < 50:
+                ilhas_processadas += 1
                 continue
 
+            # Bypass: Ilha pequena já é 1 superpixel
             if patch_area <= tamanho_medio_sp:
                 seg_patch = np.zeros_like(patch_mask, dtype=np.int32)
                 seg_patch[patch_mask] = 1
             else:
+                # SLIC Guiado pelo satélite
                 window = Window.from_slices(slc[0], slc[1])
                 patch_sat = sat_src.read((1,2,3), window=window)
                 patch_sat = np.moveaxis(patch_sat, 0, -1).astype(np.float32)
@@ -122,50 +119,18 @@ def gerar_metricas_segmentacao():
                     mask=patch_mask, convert2lab=False, enforce_connectivity=False, 
                     max_num_iter=5, start_label=1
                 )
+                seg_patch[~patch_mask] = 0
 
-            # Injetar o ID Global e aplicar os contornos
             max_id_local = seg_patch.max()
             if max_id_local > 0:
-                # Ajusta os IDs locais para não repetirem globalmente
                 mask_validos = (seg_patch > 0)
                 seg_patch[mask_validos] += global_id_offset
                 
-                # --- CÁLCULO VETORIZADO DE MÉTRICAS (RÁPIDO) ---
-                patch_f = mask_floresta[slc]
-                patch_nf = mask_nao_floresta[slc]
-                
-                # Achata as matrizes para contagem
-                flat_seg = seg_patch[mask_validos]
-                flat_f = patch_f[mask_validos]
-                flat_nf = patch_nf[mask_validos]
-                
-                # Bincount conta tudo em milissegundos
-                areas = np.bincount(flat_seg)
-                counts_f = np.bincount(flat_seg, weights=flat_f)
-                counts_nf = np.bincount(flat_seg, weights=flat_nf)
-                
-                ids_presentes = np.unique(flat_seg)
-                
-                for sp_id in ids_presentes:
-                    area_sp = areas[sp_id]
-                    qtd_flor = counts_f[sp_id]
-                    qtd_nflor = counts_nf[sp_id]
-                    
-                    if qtd_flor >= qtd_nflor:
-                        classe = "Floresta"
-                        hor = (qtd_flor / area_sp) * 100
-                    else:
-                        classe = "Nao_Floresta"
-                        hor = (qtd_nflor / area_sp) * 100
-                        
-                    estatisticas_lista.append([sp_id, area_sp, round(hor, 2), classe])
-                
-                global_id_offset += max_id_local
-                
-                # Salva na matriz global .npy
                 global_patch = global_segments[slc]
                 global_patch[mask_validos] = seg_patch[mask_validos]
                 global_segments[slc] = global_patch
+                
+                global_id_offset += max_id_local
 
             borders = find_boundaries(seg_patch, mode='inner', background=0)
             rgb_patch = rgb_out[slc]
@@ -174,56 +139,87 @@ def gerar_metricas_segmentacao():
 
             ilhas_processadas += 1
             if ilhas_processadas % 1000 == 0:
-                print(f"   [{ilhas_processadas}] ilhas processadas... Superpixels mapeados: {global_id_offset}")
+                print(f"   [{ilhas_processadas}/{num_ilhas}] ilhas processadas...")
 
-    tempo_total = round(time.time() - start_time, 1)
-    print(f"\n✅ Segmentação e Extração concluídas em {tempo_total} segundos!")
+    del ilhas, caixas
+    gc.collect()
 
     # -------------------------------------------------------------
-    # 4. SALVAMENTO DOS ARQUIVOS (NPY, CSV, TIF)
+    # 3. EXTRAÇÃO VETORIZADA DE MÉTRICAS (MÁGICA MATEMÁTICA)
     # -------------------------------------------------------------
-    print("3/4 - Salvando arquivos (.npy, .csv, .tif)...")
+    print(f"\n3/4 - Extraindo métricas (HoR) de {global_id_offset} superpixels de uma só vez...")
     
-    # Salva Numpy Array
+    flat_seg = global_segments.ravel()
+    flat_f = mask_floresta.ravel()
+    flat_nf = mask_nao_floresta.ravel()
+    
+    # Contagem fulminante via Numpy
+    areas = np.bincount(flat_seg)
+    counts_f = np.bincount(flat_seg, weights=flat_f)
+    counts_nf = np.bincount(flat_seg, weights=flat_nf)
+    
+    # Ignora o ID 0 (Fundo/Máscara Preta)
+    valid_ids = np.arange(1, len(areas))
+    valid_areas = areas[1:]
+    valid_f = counts_f[1:]
+    valid_nf = counts_nf[1:]
+    
+    # Cálculos das classes majoritárias e HoR
+    is_floresta = valid_f >= valid_nf
+    classes = np.where(is_floresta, "Floresta", "Nao_Floresta")
+    majoritarios = np.maximum(valid_f, valid_nf)
+    hor = (majoritarios / valid_areas) * 100
+
+    # Criação do DataFrame
+    df_stats = pd.DataFrame({
+        'ID_Segmento': valid_ids,
+        'Quantidade_Pixels': valid_areas,
+        'Taxa_HoR': np.round(hor, 2),
+        'Classe_Majoritaria': classes
+    })
+
+    # Remove qualquer segmento vazio que possa ter ficado no array
+    df_stats = df_stats[df_stats['Quantidade_Pixels'] > 0]
+
+    # -------------------------------------------------------------
+    # 4. SALVAR E EXIBIR
+    # -------------------------------------------------------------
+    print("4/4 - Salvando os arquivos e gerando relatório...")
+    
     np.save(saida_npy, global_segments)
-    
-    # Salva DataFrame e CSV
-    df_stats = pd.DataFrame(estatisticas_lista, columns=['ID_Segmento', 'Quantidade_Pixels', 'Taxa_HoR', 'Classe_Majoritaria'])
     df_stats.to_csv(saida_csv, index=False, sep=';', encoding='utf-8')
     
-    # Salva TIF
     meta_sat.update({"dtype": rasterio.uint8, "count": 3, "nodata": None, "photometric": "RGB"})
     with rasterio.open(saida_visual, "w", **meta_sat) as dst_vis:
         for b in range(3):
             dst_vis.write(rgb_out[:, :, b], b+1)
 
-    # -------------------------------------------------------------
-    # 5. CÁLCULO E EXIBIÇÃO DOS RELATÓRIOS ESTATÍSTICOS
-    # -------------------------------------------------------------
+    tempo_total = round(time.time() - start_time, 1)
+    
     print("\n" + "="*50)
-    print("4/4 - RELATÓRIO ESTATÍSTICO DE SUPERPIXELS")
+    print(f"✅ SCRIPT FINALIZADO EM {tempo_total} SEGUNDOS!")
     print("="*50)
+    print("RELATÓRIO ESTATÍSTICO GERAL:")
+    print("-" * 50)
     
     qtd_flor = (df_stats['Classe_Majoritaria'] == 'Floresta').sum()
     qtd_nflor = (df_stats['Classe_Majoritaria'] == 'Nao_Floresta').sum()
     
-    print(f"🌲 Quantidade de Segmentos (Floresta): {qtd_flor}")
-    print(f"🍂 Quantidade de Segmentos (Não Floresta): {qtd_nflor}")
+    print(f"🌲 Segmentos de Floresta: {qtd_flor}")
+    print(f"🍂 Segmentos Não Floresta: {qtd_nflor}")
     print("-" * 50)
-    
-    print("📏 QUANTIDADE DE PIXELS (Área):")
-    print(f"   - Média:   {df_stats['Quantidade_Pixels'].mean():.2f}")
-    print(f"   - Mediana: {df_stats['Quantidade_Pixels'].median():.2f}")
-    print(f"   - Desvio Padrão: {df_stats['Quantidade_Pixels'].std():.2f}")
-    print(f"   - Maior Segmento: {df_stats['Quantidade_Pixels'].max()} pixels")
-    print(f"   - Menor Segmento: {df_stats['Quantidade_Pixels'].min()} pixels")
+    print("📏 TAMANHO (PIXELS):")
+    print(f"   Média:  {df_stats['Quantidade_Pixels'].mean():.2f}")
+    print(f"   Mediana:{df_stats['Quantidade_Pixels'].median():.2f}")
+    print(f"   Desvio: {df_stats['Quantidade_Pixels'].std():.2f}")
+    print(f"   Maior:  {df_stats['Quantidade_Pixels'].max()}")
+    print(f"   Menor:  {df_stats['Quantidade_Pixels'].min()}")
     print("-" * 50)
-    
-    print("🎯 TAXA DE HOMOGENEIDADE (HoR %):")
-    print(f"   - Média:   {df_stats['Taxa_HoR'].mean():.2f}%")
-    print(f"   - Mediana: {df_stats['Taxa_HoR'].median():.2f}%")
-    print(f"   - Desvio Padrão: {df_stats['Taxa_HoR'].std():.2f}%")
+    print("🎯 HOMOGENEIDADE (HoR %):")
+    print(f"   Média:  {df_stats['Taxa_HoR'].mean():.2f}%")
+    print(f"   Mediana:{df_stats['Taxa_HoR'].median():.2f}%")
+    print(f"   Desvio: {df_stats['Taxa_HoR'].std():.2f}%")
     print("="*50)
 
 if __name__ == "__main__":
-    gerar_metricas_segmentacao()
+    gerar_metricas_segmentacao_turbo()
