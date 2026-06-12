@@ -61,7 +61,8 @@ def gerar_metricas_segmentacao_tiling():
     mask_nao_floresta = np.isin(mb_aligned, ids_nao_floresta)
     
     area_total_mascara = np.sum(mask_floresta | mask_nao_floresta)
-    ALVO_SUPERPIXELS = 15000
+    #ALVO_SUPERPIXELS = 15000
+    ALVO_SUPERPIXELS = 1000
     
     del mb_aligned
     gc.collect()

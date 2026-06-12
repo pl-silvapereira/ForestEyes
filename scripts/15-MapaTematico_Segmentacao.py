@@ -58,8 +58,9 @@ def executar_mapa_tematico_ultrarrapido():
     # -------------------------------------------------------------
     print("2/4 - Criando o Fundo Sólido (Floresta/Não-Floresta/Máscara)...")
     ids_floresta = [1, 3, 4, 5, 6, 49]
-    ids_nao_floresta = [10, 11, 12, 32, 50, 13]
-    
+    #ids_nao_floresta = [10, 11, 12, 32, 50, 13]
+    ids_nao_floresta = [9, 10, 11, 12, 13, 29, 32, 50]
+
     mask_floresta = np.isin(mb_aligned, ids_floresta)
     mask_nao_floresta = np.isin(mb_aligned, ids_nao_floresta)
     mask_segmentacao = mask_floresta | mask_nao_floresta
@@ -80,7 +81,8 @@ def executar_mapa_tematico_ultrarrapido():
     caixas = find_objects(ilhas)
     
     total_pixels_alvo = np.sum(mask_segmentacao)
-    ALVO_SUPERPIXELS = 15000
+    #ALVO_SUPERPIXELS = 15000
+    ALVO_SUPERPIXELS = 1000
     
     # Descobre o tamanho médio esperado de 1 superpixel
     tamanho_medio_sp = max(100, int(total_pixels_alvo / ALVO_SUPERPIXELS))
