@@ -26,7 +26,7 @@ def gerar_imagens_zooniverse():
     csv_path = os.path.join(dir_output, "17_SJC_Estatisticas_Superpixels.csv")
 
     if not all(os.path.exists(p) for p in [sat_path, mapa_path, npy_path, csv_path]):
-        print("❌ Erro: Arquivos do Script 17 (NPY, CSV, TIF) ou CBERS não encontrados.")
+        print("❌ Erro: Ficheiros do Script 17 (NPY, CSV, TIF) ou CBERS não encontrados.")
         return
 
     # Pastas de Saída para a Campanha
@@ -53,7 +53,6 @@ def gerar_imagens_zooniverse():
     print(f"-> {len(ids_alvo)} segmentos de floresta selecionados para a campanha.")
 
     print("2/4 - Calculando centróides exatos dos segmentos...")
-    # Calcula os centros apenas dos IDs que nos interessam
     centroides = center_of_mass(matriz_segmentos, matriz_segmentos, ids_alvo)
 
     # -------------------------------------------------------------
@@ -68,10 +67,7 @@ def gerar_imagens_zooniverse():
             banda_norm = np.zeros_like(banda)
         return banda_norm.astype(np.uint8)
 
-    # Colormap do matplotlib para o NDVI (Vermelho para solo, Verde para vegetação densa)
     cmap_ndvi = plt.get_cmap('RdYlGn')
-
-    # Tamanho fixo exigido para Machine Learning e Zooniverse
     TAMANHO = 256
     MEIO = TAMANHO // 2
 
@@ -95,11 +91,9 @@ def gerar_imagens_zooniverse():
                 
             cy, cx = int(centro_y), int(centro_x)
             
-            # Define as coordenadas da janela
             r_ini, r_fim = cy - MEIO, cy + MEIO
             c_ini, c_fim = cx - MEIO, cx + MEIO
             
-            # Proteção contra bordas da imagem original
             pad_top = max(0, -r_ini)
             pad_bottom = max(0, r_fim - sat_src.height)
             pad_left = max(0, -c_ini)
@@ -112,60 +106,45 @@ def gerar_imagens_zooniverse():
             
             window = Window.from_slices((win_r_ini, win_r_fim), (win_c_ini, win_c_fim))
             
-            # Lê os dados do satélite e do mapa apenas na área da janela
             sat_crop = sat_src.read(window=window).astype(np.float32)
             map_crop = map_src.read(window=window)
             seg_crop = matriz_segmentos[win_r_ini:win_r_fim, win_c_ini:win_c_fim]
             
-            # Se a janela saiu da borda, preenche com pixels pretos para manter 256x256
             if any([pad_top, pad_bottom, pad_left, pad_right]):
                 sat_crop = np.pad(sat_crop, ((0,0), (pad_top, pad_bottom), (pad_left, pad_right)), mode='constant')
                 map_crop = np.pad(map_crop, ((0,0), (pad_top, pad_bottom), (pad_left, pad_right)), mode='constant')
                 seg_crop = np.pad(seg_crop, ((pad_top, pad_bottom), (pad_left, pad_right)), mode='constant')
 
             # --- PREPARANDO AS COMPOSIÇÕES ---
-            # 1. RGB Clássico (Bandas 1, 2, 3 assumindo padrão Rasterio R, G, B)
             r = normalizar_banda(sat_crop[0])
             g = normalizar_banda(sat_crop[1])
             b = normalizar_banda(sat_crop[2])
             img_rgb = np.dstack((r, g, b))
 
-            # 2. Falsa Cor (NIR, Red, Green) e NDVI
             if tem_nir:
                 nir = sat_crop[3]
                 nir_norm = normalizar_banda(nir)
                 img_falsa_cor = np.dstack((nir_norm, r, g))
                 
-                # NDVI = (NIR - Red) / (NIR + Red)
                 numerador = (nir - sat_crop[0])
                 denominador = (nir + sat_crop[0])
-                # Evita divisão por zero
                 ndvi_raw = np.divide(numerador, denominador, out=np.zeros_like(numerador), where=denominador!=0)
                 
-                # Aplica o Colormap (Converte de -1 a 1 para RGB)
-                ndvi_colorido = cmap_ndvi((ndvi_raw + 1) / 2.0) # Escala para 0 a 1
+                ndvi_colorido = cmap_ndvi((ndvi_raw + 1) / 2.0) 
                 img_ndvi = (ndvi_colorido[:, :, :3] * 255).astype(np.uint8)
             else:
                 img_falsa_cor = img_rgb.copy()
                 img_ndvi = img_rgb.copy()
 
-            # 3. Mapa Temático
             img_tematica = np.moveaxis(map_crop, 0, -1).astype(np.uint8)
 
             # --- DESENHANDO OS CONTORNOS ---
-            # Encontra as bordas de TODOS os segmentos que apareceram na janela
             bordas_gerais = find_boundaries(seg_crop, mode='inner', background=0)
-            
-            # Encontra a borda ESPECÍFICA do nosso Segmento Alvo (para destaque)
             mascara_alvo = (seg_crop == sp_id)
             borda_alvo = find_boundaries(mascara_alvo, mode='thick')
 
             for img in [img_rgb, img_falsa_cor, img_ndvi, img_tematica]:
-                # Pinta todos os limites visíveis de Amarelo Suave
                 img[bordas_gerais] = [255, 255, 0]
-                
-                # Destaca o Segmento Alvo em Ciano Forte (ou Magenta) para guiar o voluntário
-                # Usaremos Ciano [0, 255, 255] pois contrasta muito bem com NDVI, RGB e Falsa Cor
                 img[borda_alvo] = [0, 255, 255]
 
             # --- SALVANDO AS FOTOS ---

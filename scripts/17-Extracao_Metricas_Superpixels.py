@@ -22,7 +22,6 @@ def gerar_metricas_segmentacao_tiling():
 
     imagem_sat_path = os.path.join(dir_output, "02_SJC_Recortado_MapBiomas.tif")
     
-    # Arquivos que serão gerados
     saida_visual = os.path.join(dir_output, "17_SJC_Mapa_Segmentado.tif")
     saida_npy = os.path.join(dir_output, "17_SJC_Matriz_Segmentacao.npy")
     saida_csv = os.path.join(dir_output, "17_SJC_Estatisticas_Superpixels.csv")
@@ -33,7 +32,7 @@ def gerar_metricas_segmentacao_tiling():
     mapbiomas_path = busca[0]
 
     # -------------------------------------------------------------
-    # 1. PREPARAÇÃO DOS METADADOS E MAPBIOMAS
+    # 1. PREPARAÇÃO
     # -------------------------------------------------------------
     print("1/4 - Preparando metadados e alinhando classes...")
     with rasterio.open(imagem_sat_path) as sat_src:
@@ -53,24 +52,24 @@ def gerar_metricas_segmentacao_tiling():
             resampling=Resampling.nearest
         )
 
-    # Identificação das classes
     ids_floresta = [1, 3, 4, 5, 6, 49]
-    ids_nao_floresta = [10, 11, 12, 32, 50, 13]
+    ids_nao_floresta = [9, 10, 11, 12, 13, 29, 32, 50] 
     
     mask_floresta = np.isin(mb_aligned, ids_floresta)
     mask_nao_floresta = np.isin(mb_aligned, ids_nao_floresta)
     
+    # --- CÁLCULO AUTOMÁTICO DE ALVO ---
     area_total_mascara = np.sum(mask_floresta | mask_nao_floresta)
-    #ALVO_SUPERPIXELS = 15000
-    ALVO_SUPERPIXELS = 1000
+    TAMANHO_DESEJADO_PX = 1000 
+    ALVO_SUPERPIXELS = max(1, int(area_total_mascara / TAMANHO_DESEJADO_PX))
     
     del mb_aligned
     gc.collect()
 
     # -------------------------------------------------------------
-    # 2. PROCESSAMENTO EM BLOCOS (À PROVA DE TRAVAMENTO)
+    # 2. PROCESSAMENTO EM BLOCOS
     # -------------------------------------------------------------
-    TILE_SIZE = 2000  # Processa quadrados de 2000x2000 pixels (Usa pouquíssima RAM)
+    TILE_SIZE = 2000 
     
     global_segments = np.zeros((height, width), dtype=np.int32)
     global_id_offset = 0
@@ -79,7 +78,7 @@ def gerar_metricas_segmentacao_tiling():
     meta_vis = meta_sat.copy()
     meta_vis.update({"dtype": rasterio.uint8, "count": 3, "nodata": None, "photometric": "RGB"})
 
-    print("2/4 - Iniciando segmentação e extração de métricas por blocos...")
+    print(f"2/4 - Iniciando extração de métricas por blocos (Alvo: {ALVO_SUPERPIXELS} superpíxeis)...")
     
     n_rows = int(np.ceil(height / TILE_SIZE))
     n_cols = int(np.ceil(width / TILE_SIZE))
@@ -98,33 +97,27 @@ def gerar_metricas_segmentacao_tiling():
                     win_w = min(TILE_SIZE, width - col)
                     window = Window(col, row, win_w, win_h)
                     
-                    # Extrai as máscaras locais do bloco atual
                     tile_f = mask_floresta[row:row+win_h, col:col+win_w]
                     tile_nf = mask_nao_floresta[row:row+win_h, col:col+win_w]
                     tile_mask = tile_f | tile_nf
                     
-                    # Prepara a imagem visual (Tudo começa Preto = Máscara)
                     rgb_tile = np.zeros((win_h, win_w, 3), dtype=np.uint8)
-                    rgb_tile[tile_f] = [0, 255, 0]      # Verde Sólido
-                    rgb_tile[tile_nf] = [255, 0, 0]     # Vermelho Sólido
+                    rgb_tile[tile_f] = [0, 255, 0]      
+                    rgb_tile[tile_nf] = [255, 0, 0]     
                     
                     area_tile = np.sum(tile_mask)
 
-                    # Se existir algo para segmentar neste bloco
                     if area_tile > 0:
-                        # Lê os pixels reais da imagem apenas do tamanho deste bloco (MUITO LEVE)
                         patch_sat = sat_src.read((1,2,3), window=window)
                         patch_sat = np.moveaxis(patch_sat, 0, -1).astype(np.float32)
                         
-                        # Normaliza brilho
                         for b in range(patch_sat.shape[2]):
                             p99 = np.percentile(patch_sat[:,:,b], 99)
                             if p99 > 0:
                                 patch_sat[:,:,b] = np.clip((patch_sat[:,:,b] / p99) * 255.0, 0, 255.0)
                         patch_sat = patch_sat.astype(np.uint8)
 
-                        # Calcula quantidade justa de superpixels baseada no tamanho da área deste bloco
-                        n_seg_patch = max(2, int(ALVO_SUPERPIXELS * (area_tile / area_total_mascara)))
+                        n_seg_patch = max(1, int(ALVO_SUPERPIXELS * (area_tile / area_total_mascara)))
 
                         seg_patch = slic(
                             patch_sat, n_segments=n_seg_patch, compactness=10.0, 
@@ -133,12 +126,10 @@ def gerar_metricas_segmentacao_tiling():
                         )
                         seg_patch[~tile_mask] = 0
                         
-                        # Ajusta os IDs para nunca repetirem em blocos diferentes
                         mask_validos = (seg_patch > 0)
                         if np.any(mask_validos):
                             seg_patch[mask_validos] += global_id_offset
                             
-                            # CÁLCULO DE MÉTRICAS (VETORIZADO E INSTANTÂNEO)
                             seg_validos = seg_patch[mask_validos]
                             f_validos = tile_f[mask_validos]
                             nf_validos = tile_nf[mask_validos]
@@ -160,28 +151,23 @@ def gerar_metricas_segmentacao_tiling():
                                 estatisticas_lista.append([sp_id, a, round(hor, 2), classe])
                             
                             global_id_offset += seg_patch.max() - global_id_offset
-                            
-                            # Salva os IDs na matriz Global
                             global_segments[row:row+win_h, col:col+win_w] = seg_patch
 
-                        # Desenha as bordas amarelas no bloco
                         borders = find_boundaries(seg_patch, mode='inner', background=0)
                         rgb_tile[borders] = [255, 255, 0]
 
-                    # Escreve o bloco diretamente no arquivo .tif do HD
                     for b in range(3):
                         dst_vis.write(rgb_tile[:, :, b], b+1, window=window)
                         
-                    print(f"   Bloco [{bloco_atual:03d}/{total_blocos}] concluído... (Superpixels mapeados: {global_id_offset})")
+                    print(f"   Bloco [{bloco_atual:03d}/{total_blocos}] concluído... (Mapeados: {global_id_offset})")
 
     # -------------------------------------------------------------
     # 3. SALVAR MATRIZ E CSV
     # -------------------------------------------------------------
-    print("\n3/4 - Salvando matriz de dados e planilha CSV...")
+    print("\n3/4 - Salvando matriz de dados e folha CSV...")
     np.save(saida_npy, global_segments)
     
     df_stats = pd.DataFrame(estatisticas_lista, columns=['ID_Segmento', 'Quantidade_Pixels', 'Taxa_HoR', 'Classe_Majoritaria'])
-    # Limpa possíveis IDs vazios gerados pela matemática
     df_stats = df_stats[df_stats['Quantidade_Pixels'] > 0]
     df_stats.to_csv(saida_csv, index=False, sep=';', encoding='utf-8')
 
