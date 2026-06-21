@@ -33,7 +33,6 @@ def gerar_crops_campanha_alta_resolucao():
         busca = glob.glob(os.path.join(dir_mapbiomas, "*coverage_10m*.tif"))
     mapbiomas_path = busca[0]
 
-    # Estrutura de subpastas exigida
     pastas = {
         'satelite': os.path.join(dir_output, 'crops', 'satelite'),
         'cinza': os.path.join(dir_output, 'crops', 'cinza'),
@@ -66,10 +65,10 @@ def gerar_crops_campanha_alta_resolucao():
     ids_floresta = [1, 3, 4, 5, 6, 49]
     ids_nao_floresta = [9, 10, 11, 12, 13, 29, 32, 50] 
 
-    print("2/3 - Calculando fatias (Bounding Boxes)...")
+    print("2/3 - Calculando fatias geográficas...")
     caixas = find_objects(matriz_seg)
 
-    print("3/3 - Extraindo imagens e ampliando para 1024x1024 px...")
+    print("3/3 - Processando as 100 imagens com motor Fotográfico de Alta Resolução...")
     with rasterio.open(sat_path) as sat_src:
         for idx, row in df_alvos.iterrows():
             sp_id = int(row['ID_Segmento'])
@@ -86,64 +85,107 @@ def gerar_crops_campanha_alta_resolucao():
             h_sp = max_r - min_r
             w_sp = max_c - min_c
             
+            cy = (min_r + max_r) // 2
+            cx = (min_c + max_c) // 2
+            
+            # Margem de 20%
             pad_h = int(h_sp * 0.20)
             pad_w = int(w_sp * 0.20)
             
-            r_ini = max(0, min_r - pad_h)
-            r_fim = min(sat_height, max_r + pad_h)
-            c_ini = max(0, min_c - pad_w)
-            c_fim = min(sat_width, max_c + pad_w)
+            # Calcula o tamanho alvo nativo (Mínimo de 512px reais de satélite para dar contexto HD)
+            target_h = max(h_sp + 2 * pad_h, 512)
+            target_w = max(w_sp + 2 * pad_w, 512)
             
-            window = Window.from_slices((r_ini, r_fim), (c_ini, c_fim))
+            # Força a janela a ser perfeitamente quadrada para não achatar no upscale
+            target_size = max(target_h, target_w)
+            
+            r_ini = cy - target_size // 2
+            r_fim = cy + target_size // 2
+            c_ini = cx - target_size // 2
+            c_fim = cx + target_size // 2
+            
+            # Ajuste de limites do rasterio para leitura
+            read_r_ini = max(0, r_ini)
+            read_r_fim = min(sat_height, r_fim)
+            read_c_ini = max(0, c_ini)
+            read_c_fim = min(sat_width, c_fim)
+            
+            window = Window.from_slices((read_r_ini, read_r_fim), (read_c_ini, read_c_fim))
             
             sat_crop = sat_src.read((1,2,3), window=window).astype(np.float32)
             sat_crop = np.moveaxis(sat_crop, 0, -1)
-            mb_crop = mb_aligned[r_ini:r_fim, c_ini:c_fim]
-            seg_crop = matriz_seg[r_ini:r_fim, c_ini:c_fim]
+            mb_crop = mb_aligned[read_r_ini:read_r_fim, read_c_ini:read_c_fim]
+            seg_crop = matriz_seg[read_r_ini:read_r_fim, read_c_ini:read_c_fim]
             
-            # --- IMAGEM 1: SATÉLITE RGB ---
+            # Preenchimento preto caso o contexto saia das bordas da cidade
+            pad_top = max(0, -r_ini)
+            pad_bottom = max(0, r_fim - sat_height)
+            pad_left = max(0, -c_ini)
+            pad_right = max(0, c_fim - sat_width)
+            
+            if any([pad_top, pad_bottom, pad_left, pad_right]):
+                sat_crop = np.pad(sat_crop, ((pad_top, pad_bottom), (pad_left, pad_right), (0,0)), mode='constant')
+                mb_crop = np.pad(mb_crop, ((pad_top, pad_bottom), (pad_left, pad_right)), mode='constant')
+                seg_crop = np.pad(seg_crop, ((pad_top, pad_bottom), (pad_left, pad_right)), mode='constant')
+
+            # --- PROCESSAMENTO RGB BASE ---
             sat_rgb = np.zeros_like(sat_crop, dtype=np.uint8)
             for b in range(3):
                 p2, p98 = np.percentile(sat_crop[:,:,b], (2, 98))
                 if p98 > p2:
                     sat_rgb[:,:,b] = np.clip((sat_crop[:,:,b] - p2) / (p98 - p2) * 255.0, 0, 255.0)
 
-            # --- IMAGEM 2: SATÉLITE CINZA ---
             cinza_1ch = np.dot(sat_rgb, [0.2989, 0.5870, 0.1140]).astype(np.uint8)
             sat_cinza = np.stack((cinza_1ch, cinza_1ch, cinza_1ch), axis=-1)
 
-            # --- IMAGEM 3: RGB THEMATICO ---
-            tema_rgb = np.zeros_like(sat_rgb, dtype=np.uint8)
-            tema_rgb[np.isin(mb_crop, ids_floresta)] = [0, 100, 0] 
-            tema_rgb[np.isin(mb_crop, ids_nao_floresta)] = [255, 0, 0]
+            # -------------------------------------------------------------
+            # UPSCALING FOTOGRÁFICO AVANÇADO (LANCZOS)
+            # -------------------------------------------------------------
+            ALVO_PX = (1024, 1024)
+            
+            # Interpolação fotográfica (LANCZOS) suaviza e preserva a resolução CBERS
+            img_sat = Image.fromarray(sat_rgb).resize(ALVO_PX, Image.LANCZOS)
+            img_cinza = Image.fromarray(sat_cinza).resize(ALVO_PX, Image.LANCZOS)
+            
+            # Interpolação Nearest para máscaras matemáticas (Impede que as IDs se misturem)
+            seg_1024 = np.array(Image.fromarray(seg_crop, mode='I').resize(ALVO_PX, Image.NEAREST))
+            mb_1024 = np.array(Image.fromarray(mb_crop).resize(ALVO_PX, Image.NEAREST))
 
-            # MARCAÇÃO (Apenas o segmento alvo em Verde)
-            mascara_alvo = (seg_crop == sp_id)
-            borda_alvo = find_boundaries(mascara_alvo, mode='thick')
+            # Converte de volta para Arrays Numpy para pintar
+            sat_rgb_1024 = np.array(img_sat)
+            sat_cinza_1024 = np.array(img_cinza)
 
-            sat_rgb[borda_alvo] = [0, 255, 0]
-            sat_cinza[borda_alvo] = [0, 255, 0]
-            tema_rgb[borda_alvo] = [0, 255, 0]
+            # Constrói o RGB Temático já na Alta Resolução
+            tema_rgb_1024 = np.zeros_like(sat_rgb_1024, dtype=np.uint8)
+            tema_rgb_1024[np.isin(mb_1024, ids_floresta)] = [0, 100, 0] 
+            tema_rgb_1024[np.isin(mb_1024, ids_nao_floresta)] = [255, 0, 0]
+
+            # -------------------------------------------------------------
+            # MARCAÇÃO DE BORDA VETORIAL (NÍTIDA)
+            # -------------------------------------------------------------
+            # Identifica as bordas do alvo DIRETAMENTE na matriz 1024x1024. 
+            # Isso garante que a linha será afiada e terá 1 pixel exato de espessura HD.
+            mascara_alvo_1024 = (seg_1024 == sp_id)
+            borda_alvo_1024 = find_boundaries(mascara_alvo_1024, mode='thick')
+
+            # O contorno amarelo foi removido. Pinta só o contorno principal de Verde Puro
+            sat_rgb_1024[borda_alvo_1024] = [0, 255, 0]
+            sat_cinza_1024[borda_alvo_1024] = [0, 255, 0]
+            tema_rgb_1024[borda_alvo_1024] = [0, 255, 0]
 
             # -------------------------------------------
-            # UPSCALING E SALVAMENTO (1024 x 1024 pixels)
+            # SALVAR IMAGENS 
             # -------------------------------------------
             nome_arq = f"{classe}_{tipo}_ID{sp_id}.jpg"
             
-            # O filtro Image.NEAREST garante que não haja desfoque na ampliação
-            tamanho_alvo = (1024, 1024)
-            img_sat = Image.fromarray(sat_rgb).resize(tamanho_alvo, Image.NEAREST)
-            img_cinza = Image.fromarray(sat_cinza).resize(tamanho_alvo, Image.NEAREST)
-            img_tema = Image.fromarray(tema_rgb).resize(tamanho_alvo, Image.NEAREST)
-            
-            img_sat.save(os.path.join(pastas['satelite'], nome_arq), quality=95)
-            img_cinza.save(os.path.join(pastas['cinza'], nome_arq), quality=95)
-            img_tema.save(os.path.join(pastas['rgb'], nome_arq), quality=95)
+            Image.fromarray(sat_rgb_1024).save(os.path.join(pastas['satelite'], nome_arq), quality=95)
+            Image.fromarray(sat_cinza_1024).save(os.path.join(pastas['cinza'], nome_arq), quality=95)
+            Image.fromarray(tema_rgb_1024).save(os.path.join(pastas['rgb'], nome_arq), quality=95)
 
             if (idx + 1) % 20 == 0:
-                print(f"   [{idx + 1}/{len(df_alvos)}] imagens ampliadas e exportadas...")
+                print(f"   [{idx + 1}/{len(df_alvos)}] imagens em Alta Resolução exportadas...")
 
-    print("🎉 Sucesso! As 100 imagens contextuais foram redimensionadas para 1024x1024 e salvas.")
+    print("\n🎉 Sucesso! As 100 imagens de campanha (1024x1024 px) estão salvas com máxima qualidade.")
 
 if __name__ == "__main__":
     gerar_crops_campanha_alta_resolucao()
