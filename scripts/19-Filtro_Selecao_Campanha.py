@@ -10,7 +10,7 @@ def executar_selecao_e_relatorio():
         return
 
     dir_output = os.path.join(ROOT, 'data', 'Output')
-    csv_path = os.path.join(dir_output, "19_SJC_Estatisticas_Superpixels.csv")
+    csv_path = os.path.join(dir_output, "17_SJC_Estatisticas_Superpixels.csv")
     csv_saida = os.path.join(dir_output, "19_SJC_Alvos_Campanha.csv")
 
     if not os.path.exists(csv_path):
