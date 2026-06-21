@@ -10,7 +10,7 @@ from skimage.segmentation import find_boundaries
 from PIL import Image
 from dotenv import load_dotenv
 
-def gerar_crops_campanha():
+def gerar_crops_campanha_alta_resolucao():
     load_dotenv()
     ROOT = os.getenv('PROJECT_ROOT')
     if not ROOT:
@@ -46,7 +46,6 @@ def gerar_crops_campanha():
     df_alvos = pd.read_csv(csv_alvos, sep=';')
     matriz_seg = np.load(npy_path)
     
-    # Prepara o alinhamento do MapBiomas para a geração da imagem RGB Thematica
     with rasterio.open(sat_path) as sat_src:
         height, width = sat_src.height, sat_src.width
         sat_transform, sat_crs = sat_src.transform, sat_src.crs
@@ -64,33 +63,29 @@ def gerar_crops_campanha():
             resampling=Resampling.nearest
         )
 
-    # Identificadores das classes
     ids_floresta = [1, 3, 4, 5, 6, 49]
     ids_nao_floresta = [9, 10, 11, 12, 13, 29, 32, 50] 
 
     print("2/3 - Calculando fatias (Bounding Boxes)...")
     caixas = find_objects(matriz_seg)
 
-    print("3/3 - Extraindo as 100 imagens de contexto (20% de borda)...")
+    print("3/3 - Extraindo imagens e ampliando para 1024x1024 px...")
     with rasterio.open(sat_path) as sat_src:
         for idx, row in df_alvos.iterrows():
             sp_id = int(row['ID_Segmento'])
             classe = row['Classe_Majoritaria']
             tipo = row['Tipo_Selecao']
             
-            fatia = caixas[sp_id - 1] # Indexação de IDs
+            fatia = caixas[sp_id - 1] 
             if fatia is None:
                 continue
                 
-            # Extrai os limites geográficos iniciais do segmento
             min_r, max_r = fatia[0].start, fatia[0].stop
             min_c, max_c = fatia[1].start, fatia[1].stop
             
-            # Calcula o tamanho do superpixel (Bounding Box)
             h_sp = max_r - min_r
             w_sp = max_c - min_c
             
-            # Adiciona 20% de margem de contexto
             pad_h = int(h_sp * 0.20)
             pad_w = int(w_sp * 0.20)
             
@@ -101,9 +96,6 @@ def gerar_crops_campanha():
             
             window = Window.from_slices((r_ini, r_fim), (c_ini, c_fim))
             
-            # -------------------------------------------
-            # LEITURA DE DADOS (SATÉLITE E MAPBIOMAS)
-            # -------------------------------------------
             sat_crop = sat_src.read((1,2,3), window=window).astype(np.float32)
             sat_crop = np.moveaxis(sat_crop, 0, -1)
             mb_crop = mb_aligned[r_ini:r_fim, c_ini:c_fim]
@@ -117,40 +109,41 @@ def gerar_crops_campanha():
                     sat_rgb[:,:,b] = np.clip((sat_crop[:,:,b] - p2) / (p98 - p2) * 255.0, 0, 255.0)
 
             # --- IMAGEM 2: SATÉLITE CINZA ---
-            # Fórmula de luminância (R*0.299 + G*0.587 + B*0.114)
             cinza_1ch = np.dot(sat_rgb, [0.2989, 0.5870, 0.1140]).astype(np.uint8)
             sat_cinza = np.stack((cinza_1ch, cinza_1ch, cinza_1ch), axis=-1)
 
             # --- IMAGEM 3: RGB THEMATICO ---
             tema_rgb = np.zeros_like(sat_rgb, dtype=np.uint8)
-            # Fundo mais escuro (0, 100, 0) para o verde claro (0, 255, 0) da borda aparecer bem
             tema_rgb[np.isin(mb_crop, ids_floresta)] = [0, 100, 0] 
             tema_rgb[np.isin(mb_crop, ids_nao_floresta)] = [255, 0, 0]
 
-            # -------------------------------------------
-            # MARCAÇÃO: APENAS O SEGMENTO EM VERDE
-            # -------------------------------------------
+            # MARCAÇÃO (Apenas o segmento alvo em Verde)
             mascara_alvo = (seg_crop == sp_id)
             borda_alvo = find_boundaries(mascara_alvo, mode='thick')
 
-            # O contorno amarelo foi removido. Pinta só o contorno principal de Verde
             sat_rgb[borda_alvo] = [0, 255, 0]
             sat_cinza[borda_alvo] = [0, 255, 0]
             tema_rgb[borda_alvo] = [0, 255, 0]
 
             # -------------------------------------------
-            # SALVAR IMAGENS
+            # UPSCALING E SALVAMENTO (1024 x 1024 pixels)
             # -------------------------------------------
-            # Padrão: {Classe}_{Perfeito/Imperfeito}_ID.jpg
             nome_arq = f"{classe}_{tipo}_ID{sp_id}.jpg"
             
-            Image.fromarray(sat_rgb).save(os.path.join(pastas['satelite'], nome_arq), quality=95)
-            Image.fromarray(sat_cinza).save(os.path.join(pastas['cinza'], nome_arq), quality=95)
-            Image.fromarray(tema_rgb).save(os.path.join(pastas['rgb'], nome_arq), quality=95)
+            # O filtro Image.NEAREST garante que não haja desfoque na ampliação
+            tamanho_alvo = (1024, 1024)
+            img_sat = Image.fromarray(sat_rgb).resize(tamanho_alvo, Image.NEAREST)
+            img_cinza = Image.fromarray(sat_cinza).resize(tamanho_alvo, Image.NEAREST)
+            img_tema = Image.fromarray(tema_rgb).resize(tamanho_alvo, Image.NEAREST)
+            
+            img_sat.save(os.path.join(pastas['satelite'], nome_arq), quality=95)
+            img_cinza.save(os.path.join(pastas['cinza'], nome_arq), quality=95)
+            img_tema.save(os.path.join(pastas['rgb'], nome_arq), quality=95)
 
-    print("🎉 Sucesso! As 100 imagens contextuais foram recortadas nas pastas:")
-    for v in pastas.values():
-        print(f"📁 {v}")
+            if (idx + 1) % 20 == 0:
+                print(f"   [{idx + 1}/{len(df_alvos)}] imagens ampliadas e exportadas...")
+
+    print("🎉 Sucesso! As 100 imagens contextuais foram redimensionadas para 1024x1024 e salvas.")
 
 if __name__ == "__main__":
-    gerar_crops_campanha()
+    gerar_crops_campanha_alta_resolucao()
