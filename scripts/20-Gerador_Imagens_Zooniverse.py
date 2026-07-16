@@ -10,7 +10,7 @@ from skimage.segmentation import find_boundaries
 from PIL import Image
 from dotenv import load_dotenv
 
-def gerar_crops_campanha_alta_resolucao():
+def gerar_crops_campanha_alta_resolucao_zoom():
     load_dotenv()
     ROOT = os.getenv('PROJECT_ROOT')
     if not ROOT:
@@ -68,7 +68,7 @@ def gerar_crops_campanha_alta_resolucao():
     print("2/3 - Calculando fatias geográficas...")
     caixas = find_objects(matriz_seg)
 
-    print("3/3 - Processando as 100 imagens com motor Fotográfico de Alta Resolução...")
+    print("3/3 - Processando as 100 imagens com Zoom Fotográfico HD...")
     with rasterio.open(sat_path) as sat_src:
         for idx, row in df_alvos.iterrows():
             sp_id = int(row['ID_Segmento'])
@@ -88,23 +88,24 @@ def gerar_crops_campanha_alta_resolucao():
             cy = (min_r + max_r) // 2
             cx = (min_c + max_c) // 2
             
-            # Margem de 20%
-            pad_h = int(h_sp * 0.20)
-            pad_w = int(w_sp * 0.20)
+            # --- NOVA LÓGICA DE CÁLCULO DA JANELA NATIVA (ZOOM FOTOGRÁFICO) ---
             
-            # Calcula o tamanho alvo nativo (Mínimo de 512px reais de satélite para dar contexto HD)
-            target_h = max(h_sp + 2 * pad_h, 512)
-            target_w = max(w_sp + 2 * pad_w, 512)
+            # Define o tamanho quadrado da janela nativa baseada na maior dimensão do superpixel
+            max_dim_native = max(h_sp, w_sp)
             
-            # Força a janela a ser perfeitamente quadrada para não achatar no upscale
-            target_size = max(target_h, target_w)
+            # Adiciona uma pequena margem proporcional total (e.g. 25% extra ou 1.25x)
+            # para dar enquadramento nítido sem remover o superpixel do centro
+            target_size_native = int(max_dim_native * 1.25) 
             
-            r_ini = cy - target_size // 2
-            r_fim = cy + target_size // 2
-            c_ini = cx - target_size // 2
-            c_fim = cx + target_size // 2
+            # Define os limites da janela quadrada centralizada no superpixel (coordenadas nativas)
+            r_ini = cy - target_size_native // 2
+            r_fim = cy + target_size_native // 2
+            c_ini = cx - target_size_native // 2
+            c_fim = cx + target_size_native // 2
             
-            # Ajuste de limites do rasterio para leitura
+            # --------------------------------------------------------------------------------
+
+            # Ajuste de limites do rasterio para leitura (Proteção contra bordas nativas)
             read_r_ini = max(0, r_ini)
             read_r_fim = min(sat_height, r_fim)
             read_c_ini = max(0, c_ini)
@@ -117,7 +118,7 @@ def gerar_crops_campanha_alta_resolucao():
             mb_crop = mb_aligned[read_r_ini:read_r_fim, read_c_ini:read_c_fim]
             seg_crop = matriz_seg[read_r_ini:read_r_fim, read_c_ini:read_c_fim]
             
-            # Preenchimento preto caso o contexto saia das bordas da cidade
+            # Preenchimento preto caso o contexto saia das bordas da cidade nativa
             pad_top = max(0, -r_ini)
             pad_bottom = max(0, r_fim - sat_height)
             pad_left = max(0, -c_ini)
@@ -128,7 +129,7 @@ def gerar_crops_campanha_alta_resolucao():
                 mb_crop = np.pad(mb_crop, ((pad_top, pad_bottom), (pad_left, pad_right)), mode='constant')
                 seg_crop = np.pad(seg_crop, ((pad_top, pad_bottom), (pad_left, pad_right)), mode='constant')
 
-            # --- PROCESSAMENTO RGB BASE ---
+            # --- PROCESSAMENTO RGB BASE (IMAGENS DO SATÉLITE) ---
             sat_rgb = np.zeros_like(sat_crop, dtype=np.uint8)
             for b in range(3):
                 p2, p98 = np.percentile(sat_crop[:,:,b], (2, 98))
@@ -141,9 +142,10 @@ def gerar_crops_campanha_alta_resolucao():
             # -------------------------------------------------------------
             # UPSCALING FOTOGRÁFICO AVANÇADO (LANCZOS)
             # -------------------------------------------------------------
+            # O motor de upscaling fotográfico LANCZOS suaviza a ampliação
+            # sem gerar os "quadradões" do Nearest Neighbor, aproveitando a resolução CBERS-4A.
             ALVO_PX = (1024, 1024)
             
-            # Interpolação fotográfica (LANCZOS) suaviza e preserva a resolução CBERS
             img_sat = Image.fromarray(sat_rgb).resize(ALVO_PX, Image.LANCZOS)
             img_cinza = Image.fromarray(sat_cinza).resize(ALVO_PX, Image.LANCZOS)
             
@@ -151,20 +153,20 @@ def gerar_crops_campanha_alta_resolucao():
             seg_1024 = np.array(Image.fromarray(seg_crop, mode='I').resize(ALVO_PX, Image.NEAREST))
             mb_1024 = np.array(Image.fromarray(mb_crop).resize(ALVO_PX, Image.NEAREST))
 
-            # Converte de volta para Arrays Numpy para pintar
+            # Converte de volta para Arrays Numpy para pintar a borda HD
             sat_rgb_1024 = np.array(img_sat)
             sat_cinza_1024 = np.array(img_cinza)
 
-            # Constrói o RGB Temático já na Alta Resolução
+            # Constrói o RGB Temático já na Alta Resolução 1024x1024
             tema_rgb_1024 = np.zeros_like(sat_rgb_1024, dtype=np.uint8)
             tema_rgb_1024[np.isin(mb_1024, ids_floresta)] = [0, 100, 0] 
             tema_rgb_1024[np.isin(mb_1024, ids_nao_floresta)] = [255, 0, 0]
 
             # -------------------------------------------------------------
-            # MARCAÇÃO DE BORDA VETORIAL (NÍTIDA)
+            # MARCAÇÃO DE BORDA VETORIAL (NÍTIDA, EXIBIÇÃO NO ZOONIVERSE)
             # -------------------------------------------------------------
             # Identifica as bordas do alvo DIRETAMENTE na matriz 1024x1024. 
-            # Isso garante que a linha será afiada e terá 1 pixel exato de espessura HD.
+            # Isso garante que a linha verde será afiada, fina e vetorial.
             mascara_alvo_1024 = (seg_1024 == sp_id)
             borda_alvo_1024 = find_boundaries(mascara_alvo_1024, mode='thick')
 
@@ -174,7 +176,7 @@ def gerar_crops_campanha_alta_resolucao():
             tema_rgb_1024[borda_alvo_1024] = [0, 255, 0]
 
             # -------------------------------------------
-            # SALVAR IMAGENS 
+            # SALVAR IMAGENS (Saída final HD 1024x1024 px)
             # -------------------------------------------
             nome_arq = f"{classe}_{tipo}_ID{sp_id}.jpg"
             
@@ -183,9 +185,9 @@ def gerar_crops_campanha_alta_resolucao():
             Image.fromarray(tema_rgb_1024).save(os.path.join(pastas['rgb'], nome_arq), quality=95)
 
             if (idx + 1) % 20 == 0:
-                print(f"   [{idx + 1}/{len(df_alvos)}] imagens em Alta Resolução exportadas...")
+                print(f"   [{idx + 1}/{len(df_alvos)}] imagens em Alta Resolução (Zoom HD) exportadas...")
 
-    print("\n🎉 Sucesso! As 100 imagens de campanha (1024x1024 px) estão salvas com máxima qualidade.")
+    print("\n🎉 Sucesso! As 100 imagens de campanha (1024x1024 px) estão salvas com enquadramento Zoom HD.")
 
 if __name__ == "__main__":
-    gerar_crops_campanha_alta_resolucao()
+    gerar_crops_campanha_alta_resolucao_zoom()
