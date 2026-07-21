@@ -4,34 +4,48 @@ import rasterio
 from rasterio.enums import Resampling
 from rasterio.vrt import WarpedVRT
 from rasterio.windows import Window
-from dotenv import load_dotenv
 import time
 
-def executar_pan_sharpening():
-    load_dotenv()
-    ROOT = os.getenv('PROJECT_ROOT')
-    if not ROOT:
-        print("❌ Erro: Variável 'PROJECT_ROOT' não encontrada.")
-        return
+# Se estiver a usar o Google Colab, descomente as duas linhas abaixo para montar o Drive automaticamente:
+# from google.colab import drive
+# drive.mount('/content/drive')
 
+def executar_pan_sharpening():
+    # ---------------------------------------------------------------------
+    # CONFIGURAÇÃO DE CAMINHOS (Adaptado para o seu Google Drive)
+    # ---------------------------------------------------------------------
+    ROOT = "/content/drive/MyDrive/Mestrado/04-Projeto ForestEyes/ForestEyes"
+    
     dir_input = os.path.join(ROOT, 'data', 'Input')
     dir_output = os.path.join(ROOT, 'data', 'Output')
 
-    # =========================================================================
-    # ATENÇÃO: Ajuste os nomes dos arquivos conforme baixados do catálogo INPE
-    # O arquivo MS deve conter as 4 bandas (Azul, Verde, Vermelho, NIR) em 8m
-    # O arquivo PAN deve conter a banda Pancromática em 2m
-    # =========================================================================
-    ms_path = os.path.join(dir_input, "CBERS4A_WPM_Multiespectral_8m.tif")
-    pan_path = os.path.join(dir_input, "CBERS4A_WPM_Pancromatica_2m.tif")
+    # Nomes dos ficheiros (Altere aqui se os seus ficheiros tiverem um nome diferente no Drive)
+    NOME_ARQUIVO_MS = "CBERS4A_WPM_Multiespectral_8m.tif"
+    NOME_ARQUIVO_PAN = "CBERS4A_WPM_Pancromatica_2m.tif"
+    
+    ms_path = os.path.join(dir_input, NOME_ARQUIVO_MS)
+    pan_path = os.path.join(dir_input, NOME_ARQUIVO_PAN)
     
     saida_pansharp = os.path.join(dir_output, "21_SJC_CBERS4A_PanSharpened_2m.tif")
 
-    if not os.path.exists(ms_path) or not os.path.exists(pan_path):
-        print(f"❌ Erro: Arquivos base não encontrados. Verifique se as imagens MS (8m) e PAN (2m) estão na pasta {dir_input}.")
+    # Verifica se a pasta existe, senão cria-a
+    os.makedirs(dir_output, exist_ok=True)
+
+    # Verifica se os ficheiros de entrada realmente existem no caminho especificado
+    if not os.path.exists(ms_path):
+        print(f"❌ Erro: Imagem Multiespectral (MS) não encontrada em:\n{ms_path}")
+        print("Por favor, verifique o nome do ficheiro e faça o upload para a pasta Input.")
+        return
+        
+    if not os.path.exists(pan_path):
+        print(f"❌ Erro: Imagem Pancromática (PAN) não encontrada em:\n{pan_path}")
+        print("Por favor, verifique o nome do ficheiro e faça o upload para a pasta Input.")
         return
 
-    print("1/3 - Lendo metadados e configurando o Raster Virtual (VRT)...")
+    # ---------------------------------------------------------------------
+    # EXECUÇÃO DO PAN-SHARPENING
+    # ---------------------------------------------------------------------
+    print("1/3 - A ler metadados e a configurar o Raster Virtual (VRT)...")
     
     with rasterio.open(pan_path) as pan_src, rasterio.open(ms_path) as ms_src:
         
@@ -40,10 +54,10 @@ def executar_pan_sharpening():
         # Atualizamos para 4 bandas (RGB + NIR) mantendo a resolução da PAN
         meta_pansharp.update({
             "count": ms_src.count,  # 4 bandas
-            "dtype": ms_src.dtypes[0] # Mantém o tipo de dado original (ex: uint16 ou uint8)
+            "dtype": ms_src.dtypes[0] # Mantém o tipo de dado original
         })
 
-        # Configura o Raster Virtual para expandir a imagem de 8m para 2m "no ar"
+        # Configura o Raster Virtual para expandir a imagem de 8m para 2m "on-the-fly"
         vrt_options = {
             'resampling': Resampling.bilinear,
             'crs': pan_src.crs,
@@ -52,8 +66,8 @@ def executar_pan_sharpening():
             'width': pan_src.width,
         }
 
-        print("2/3 - Iniciando a fusão de imagens (Pan-Sharpening - Método Brovey)...")
-        print(f"-> Resolução alvo: {pan_src.width} x {pan_src.height} pixels")
+        print("2/3 - A iniciar a fusão de imagens (Método Brovey)...")
+        print(f"-> Resolução alvo: {pan_src.width} x {pan_src.height} píxeis")
         
         TILE_SIZE = 2000
         n_rows = int(np.ceil(pan_src.height / TILE_SIZE))
@@ -62,11 +76,11 @@ def executar_pan_sharpening():
         bloco_atual = 0
         start_time = time.time()
 
-        # Abre o arquivo de saída e aplica o VRT
+        # Abre o ficheiro de saída e aplica o VRT
         with rasterio.open(saida_pansharp, "w", **meta_pansharp) as dst_vis:
             with WarpedVRT(ms_src, **vrt_options) as vrt_ms:
                 
-                # Processamento em Blocos para evitar estouro de memória (RAM)
+                # Processamento em Blocos para evitar estouro de memória (RAM) no Colab
                 for row in range(0, pan_src.height, TILE_SIZE):
                     for col in range(0, pan_src.width, TILE_SIZE):
                         bloco_atual += 1
@@ -76,27 +90,25 @@ def executar_pan_sharpening():
                         window = Window(col, row, win_w, win_h)
                         
                         # Lê os dados do bloco atual
-                        # A imagem MS é lida já redimensionada para 2m através do VRT
                         pan_data = pan_src.read(1, window=window).astype(np.float32)
                         ms_data = vrt_ms.read(window=window).astype(np.float32)
                         
-                        # --- ALGORITMO BROVEY PARA PAN-SHARPENING ---
-                        # Evita divisão por zero somando uma constante minúscula
+                        # --- ALGORITMO BROVEY ---
+                        # Evita divisão por zero
                         ms_sum = np.sum(ms_data, axis=0)
                         ms_sum[ms_sum == 0] = 1e-5 
                         
-                        # Calcula a razão entre a alta resolução e a soma da baixa resolução
+                        # Calcula o rácio
                         ratio = pan_data / ms_sum
                         
-                        # Aplica a razão a cada uma das 4 bandas (R, G, B, NIR)
+                        # Aplica o rácio a cada uma das bandas
                         pan_sharpened_data = np.zeros_like(ms_data)
                         for i in range(ms_src.count):
                             banda_fundida = ms_data[i] * ratio
-                            # Clip para evitar estourar o limite de cor do formato original
                             max_val = np.iinfo(meta_pansharp['dtype']).max if np.issubdtype(meta_pansharp['dtype'], np.integer) else 1.0
                             pan_sharpened_data[i] = np.clip(banda_fundida, 0, max_val)
                         
-                        # Converte de volta para o tipo de dado original e salva o bloco
+                        # Converte e guarda o bloco
                         pan_sharpened_data = pan_sharpened_data.astype(meta_pansharp['dtype'])
                         dst_vis.write(pan_sharpened_data, window=window)
                         
@@ -108,7 +120,7 @@ def executar_pan_sharpening():
     print("\n" + "="*50)
     print(f"✅ SCRIPT FINALIZADO EM {tempo_total} SEGUNDOS!")
     print("="*50)
-    print(f"🎉 A imagem final com Pan-Sharpening (2m, 4 Bandas) foi salva em:\n{saida_pansharp}")
+    print(f"🎉 A imagem final com Pan-Sharpening (2m, 4 Bandas) foi guardada em:\n{saida_pansharp}")
 
 if __name__ == "__main__":
     executar_pan_sharpening()
