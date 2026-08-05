@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 def aplicar_stretch_contraste(banda_matriz):
     """
-    Aplica um stretch linear de contraste (2% - 98%) para normalização e visualização[cite: 3].
+    Aplica um stretch linear de contraste (2% - 98%) para normalização e visualização.
     """
     banda_mascarada = np.ma.masked_equal(banda_matriz, 0)
     
@@ -35,7 +35,7 @@ def gerar_multibandas(caminho_arquivo, diretorio_saida_tif, diretorio_saida_png)
     os.makedirs(diretorio_saida_png, exist_ok=True)
     
     bandas_processadas = {}
-    nomes_bandas = ['B1_Azul', 'B2_Verde', 'B3_Vermelho', 'B4_NIR'][cite: 3]
+    nomes_bandas = ['B1_Azul', 'B2_Verde', 'B3_Vermelho', 'B4_NIR']
     
     print(f"Lendo arquivo base recortado:\n-> {caminho_arquivo}")
     
@@ -51,14 +51,14 @@ def gerar_multibandas(caminho_arquivo, diretorio_saida_tif, diretorio_saida_png)
             'nodata': 0
         })
         
-        # 2. Lê e processa as 4 bandas da imagem fonte[cite: 3]
+        # 2. Lê e processa as 4 bandas da imagem fonte
         # Assume-se que a imagem original tem as bandas na ordem: 1, 2, 3, 4
         for i, nome in enumerate(nomes_bandas, start=1):
             matriz = src.read(i)
             bandas_processadas[nome] = aplicar_stretch_contraste(matriz)
             
-    # 3. Geração das 24 permutações possíveis[cite: 3]
-    todas_combinacoes = list(itertools.permutations(nomes_bandas, 3))[cite: 3]
+    # 3. Geração das 24 permutações possíveis
+    todas_combinacoes = list(itertools.permutations(nomes_bandas, 3))
     print(f"\nGerando {len(todas_combinacoes)} composições (GeoTIFF e PNG)...")
     
     for composicao in todas_combinacoes:
@@ -71,18 +71,18 @@ def gerar_multibandas(caminho_arquivo, diretorio_saida_tif, diretorio_saida_png)
         # -----------------------------------------------------
         # EXPORTAÇÃO EM PNG LEVE
         # -----------------------------------------------------
-        imagem_rgb = np.dstack((matriz_r, matriz_g, matriz_b))[cite: 3]
-        img = Image.fromarray(imagem_rgb)[cite: 3]
+        imagem_rgb = np.dstack((matriz_r, matriz_g, matriz_b))
+        img = Image.fromarray(imagem_rgb)
         
-        largura_maxima = 1920[cite: 3]
+        largura_maxima = 1920
         if img.width > largura_maxima:
-            proporcao = largura_maxima / img.width[cite: 3]
-            nova_altura = int(img.height * proporcao)[cite: 3]
-            img = img.resize((largura_maxima, nova_altura), Image.Resampling.LANCZOS)[cite: 3]
+            proporcao = largura_maxima / img.width
+            nova_altura = int(img.height * proporcao)
+            img = img.resize((largura_maxima, nova_altura), Image.Resampling.LANCZOS)
         
-        nome_png = f"preview_{r}_{g}_{b}.png"[cite: 3]
-        caminho_png = os.path.join(diretorio_saida_png, nome_png)[cite: 3]
-        img.save(caminho_png, optimize=True)[cite: 3]
+        nome_png = f"preview_{r}_{g}_{b}.png"
+        caminho_png = os.path.join(diretorio_saida_png, nome_png)
+        img.save(caminho_png, optimize=True)
         arquivos_gerados["png"].append(caminho_png)
         
         # -----------------------------------------------------
