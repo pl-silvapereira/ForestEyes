@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 class_metadata = {}
 
 def registar_categoria(ids, name, color, iso120, iso122, iso123):
+    """Função auxiliar para preencher os metadados de forma limpa e organizada."""
     for i in ids:
         class_metadata[i] = {
             'name': name,
@@ -61,14 +62,32 @@ registar_categoria([4, 5, 6, 23, 27, 30, 32, 35, 40, 47, 49, 50, 62, 75], 'Desca
     'N/A - Remocao de anomalias da modelagem de risco.')
 
 def gerar_estilo_qml_automatico(caminho_qml, metadata):
+<<<<<<< HEAD:urban-deforestation-monitoring/workspace/scripts/05-gerarClassificacaoMapBiomas.py
     categorias, simbolos = "", ""
     classes_unicas = {info['name']: info['color'] for info in metadata.values()}
+=======
+    """Gera um arquivo de estilo do QGIS (.qml) com as cores corretas e sem bordas."""
+    categorias = ""
+    simbolos = ""
+    
+    classes_unicas = {}
+    for cid, info in metadata.items():
+        if info['name'] not in classes_unicas:
+            classes_unicas[info['name']] = info['color']
+>>>>>>> parent of f902290 (inserido o contexto do ano nos arquivos e tambem adicionado um orchestrator para realizar a chamada do periodo de anos.):urban-deforestation-monitoring/workspace/scripts/05-Classificacao.py
     
     for i, (nome, cor) in enumerate(classes_unicas.items()):
         h = cor.lstrip('#')
         r, g, b = tuple(int(h[j:j+2], 16) for j in (0, 2, 4))
         symbol_name = str(i)
+<<<<<<< HEAD:urban-deforestation-monitoring/workspace/scripts/05-gerarClassificacaoMapBiomas.py
         categorias += f'<category render="true" symbol="{symbol_name}" value="{nome}" label="{nome}"/>\n'
+=======
+        
+        categorias += f'<category render="true" symbol="{symbol_name}" value="{nome}" label="{nome}"/>\n'
+        
+        # outline_style="no" garante o contorno transparente que você solicitou
+>>>>>>> parent of f902290 (inserido o contexto do ano nos arquivos e tambem adicionado um orchestrator para realizar a chamada do periodo de anos.):urban-deforestation-monitoring/workspace/scripts/05-Classificacao.py
         simbolos += f"""
       <symbol alpha="1" type="fill" name="{symbol_name}">
         <layer pass="0" class="SimpleFill" locked="0">
@@ -87,6 +106,7 @@ def gerar_estilo_qml_automatico(caminho_qml, metadata):
     
     with open(caminho_qml, 'w', encoding='utf-8') as f:
         f.write(conteudo_qml)
+<<<<<<< HEAD:urban-deforestation-monitoring/workspace/scripts/05-gerarClassificacaoMapBiomas.py
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
@@ -113,18 +133,65 @@ if __name__ == "__main__":
     caminho_qml = os.path.join(pasta_saida, f"{prefixo}.qml")
 
     with rasterio.open(caminho_mapbiomas) as src:
+=======
+    print(f"🎨 Estilo QML (contorno transparente) gerado com sucesso:\n-> {caminho_qml}")
+
+def processar_vetorizacao(input_path, output_shp, output_qml):
+    """Converte o raster do MapBiomas em polígonos inteligentes e enriquece com ISO."""
+    print(f"📖 Lendo o raster do MapBiomas e iniciando vetorização:\n-> {input_path}")
+
+    with rasterio.open(input_path) as src:
+>>>>>>> parent of f902290 (inserido o contexto do ano nos arquivos e tambem adicionado um orchestrator para realizar a chamada do periodo de anos.):urban-deforestation-monitoring/workspace/scripts/05-Classificacao.py
         data = src.read(1)
         nodata_val = src.nodata if src.nodata is not None else 0
+        
+        # Extrai os shapes (polígonos) diretamente da matriz de pixels
         shapes_gen = features.shapes(data.astype(np.int32), transform=src.transform)
         
         polygons = []
         for s, v in shapes_gen:
             v_int = int(v)
+<<<<<<< HEAD:urban-deforestation-monitoring/workspace/scripts/05-gerarClassificacaoMapBiomas.py
             if v_int == nodata_val or v_int == 0: continue
             nome_classe = class_metadata[v_int]['name'] if v_int in class_metadata else f"ID_{v_int}"
             polygons.append({'properties': {'class_id': v_int, 'class_name': nome_classe}, 'geometry': s})
+=======
+            
+            # Ignora pixels de fundo (nodata ou zero)
+            if v_int == nodata_val or v_int == 0:
+                continue
+                
+            # Mapeia as informações caso o ID exista no nosso dicionário
+            if v_int in class_metadata:
+                info = class_metadata[v_int]
+                nome_classe = info['name']
+                i_120 = info['iso_37120']
+                i_122 = info['iso_37122']
+                i_123 = info['iso_37123']
+            else:
+                nome_classe = f"Categoria_Nao_Mapeada_ID_{v_int}"
+                class_metadata[v_int] = {'name': nome_classe, 'color': '#FF00FF'}
+                i_120 = i_122 = i_123 = "Requer analise manual (Categoria nova)."
+                
+            polygons.append({
+                'properties': {
+                    'class_id': v_int,
+                    'class_name': nome_classe,
+                    'iso_37120': i_120,
+                    'iso_37122': i_122,
+                    'iso_37123': i_123
+                },
+                'geometry': s
+            })
+>>>>>>> parent of f902290 (inserido o contexto do ano nos arquivos e tambem adicionado um orchestrator para realizar a chamada do periodo de anos.):urban-deforestation-monitoring/workspace/scripts/05-Classificacao.py
 
+    if not polygons:
+        print("⚠️ Nenhuma classe mapeada foi encontrada no arquivo.")
+        sys.exit(1)
+
+    print("🧩 Criando GeoDataFrame e salvando Shapefile (isso pode levar alguns segundos)...")
     gdf = gpd.GeoDataFrame.from_features(polygons, crs=src.crs)
+<<<<<<< HEAD:urban-deforestation-monitoring/workspace/scripts/05-gerarClassificacaoMapBiomas.py
     gdf.to_file(caminho_shp)
     gerar_estilo_qml_automatico(caminho_qml, class_metadata)
 
@@ -132,3 +199,75 @@ if __name__ == "__main__":
     json_final = os.path.join(diretorio_reports, f"{CODE_MUNI}_{ANO}_classification_results.json")
     with open(json_final, 'w', encoding='utf-8') as f:
         json.dump(dados_finais, f, indent=4, ensure_ascii=False)
+=======
+    gdf.to_file(output_shp)
+    
+    print(f"✅ Shapefile enriquecido com normas ISO gerado:\n-> {output_shp}")
+    gerar_estilo_qml_automatico(output_qml, class_metadata)
+    
+    return output_shp, output_qml
+
+if __name__ == "__main__":
+    # 1. Capturar argumento
+    if len(sys.argv) < 2:
+        print("Erro: Parâmetros insuficientes.")
+        print("Uso correto: python 05-gerarClassificacaoMapBiomas.py <code_muni>")
+        sys.exit(1)
+
+    CODE_MUNI = int(sys.argv[1])
+
+    # 2. Carregar ambiente
+    load_dotenv()
+    project_root = os.getenv("PROJECT_ROOT")
+    if not project_root:
+        raise ValueError("A variável PROJECT_ROOT não foi encontrada no arquivo .env.")
+
+    diretorio_reports = os.path.join(project_root, "reports")
+    json_mapbiomas = os.path.join(diretorio_reports, f"{CODE_MUNI}.json")
+
+    # 3. Validar a existência do relatório da Etapa 01
+    if not os.path.exists(json_mapbiomas):
+        print(f"[ERRO CRÍTICO] Arquivo JSON não encontrado: {json_mapbiomas}")
+        print("Certifique-se de executar o Script 01 antes de rodar a classificação.")
+        sys.exit(1)
+
+    # 4. Ler JSON para encontrar a imagem bruta do MapBiomas
+    with open(json_mapbiomas, 'r', encoding='utf-8') as f:
+        dados_mb = json.load(f)
+        
+    caminho_mapbiomas = dados_mb.get("arquivo_mapbiomas")
+    if not caminho_mapbiomas or not os.path.exists(caminho_mapbiomas):
+        print("[ERRO] O caminho do arquivo MapBiomas original não foi encontrado no JSON ou no disco.")
+        sys.exit(1)
+
+    # 5. Configurar diretórios de saída
+    pasta_saida = os.path.join(project_root, "data", "output", "classification")
+    os.makedirs(pasta_saida, exist_ok=True)
+    
+    prefixo = f"{CODE_MUNI}_Classificado_ForestEyes"
+    caminho_shp = os.path.join(pasta_saida, f"{prefixo}.shp")
+    caminho_qml = os.path.join(pasta_saida, f"{prefixo}.qml")
+
+    print(f"==================================================")
+    print(f" INICIANDO CLASSIFICAÇÃO VETORIAL: MUNICÍPIO {CODE_MUNI}")
+    print(f"==================================================")
+
+    # 6. Executar vetorização e estilização
+    shp_gerado, qml_gerado = processar_vetorizacao(caminho_mapbiomas, caminho_shp, caminho_qml)
+
+    # 7. Salvar relatório JSON com o resultado
+    dados_finais = {
+        "code_muni": CODE_MUNI,
+        "arquivo_origem_mapbiomas": caminho_mapbiomas,
+        "arquivos_gerados": {
+            "shapefile": shp_gerado,
+            "qml_style": qml_gerado
+        }
+    }
+    
+    json_final = os.path.join(diretorio_reports, f"{CODE_MUNI}_classification_results.json")
+    with open(json_final, 'w', encoding='utf-8') as f:
+        json.dump(dados_finais, f, indent=4, ensure_ascii=False)
+
+    print(f"\n[RELATÓRIO] JSON com mapeamento dos arquivos de classificação salvo em:\n-> {json_final}")
+>>>>>>> parent of f902290 (inserido o contexto do ano nos arquivos e tambem adicionado um orchestrator para realizar a chamada do periodo de anos.):urban-deforestation-monitoring/workspace/scripts/05-Classificacao.py
