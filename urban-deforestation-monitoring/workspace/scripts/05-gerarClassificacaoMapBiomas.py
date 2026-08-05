@@ -1,10 +1,10 @@
 import sys
+import os
+import json
+import numpy as np
 import rasterio
 from rasterio import features
 import geopandas as gpd
-import numpy as np
-import os
-import json
 from dotenv import load_dotenv
 
 class_metadata = {}
@@ -12,8 +12,11 @@ class_metadata = {}
 def registar_categoria(ids, name, color, iso120, iso122, iso123):
     for i in ids:
         class_metadata[i] = {
-            'name': name, 'color': color,
-            'iso_37120': iso120, 'iso_37122': iso122, 'iso_37123': iso123
+            'name': name,
+            'color': color,
+            'iso_37120': iso120,
+            'iso_37122': iso122,
+            'iso_37123': iso123
         }
 
 # 1. FLORESTAS
@@ -59,29 +62,65 @@ registar_categoria([4, 5, 6, 23, 27, 30, 32, 35, 40, 47, 49, 50, 62, 75], 'Desca
 
 def gerar_estilo_qml_automatico(caminho_qml, metadata):
     categorias, simbolos = "", ""
-    classes_unicas = {}
-    for info in metadata.values():
-        if info['name'] not in classes_unicas: classes_unicas[info['name']] = info['color']
+    classes_unicas = {info['name']: info['color'] for info in metadata.values()}
     
     for i, (nome, cor) in enumerate(classes_unicas.items()):
         h = cor.lstrip('#')
         r, g, b = tuple(int(h[j:j+2], 16) for j in (0, 2, 4))
-        categorias += f'<category render="true" symbol="{i}" value="{nome}" label="{nome}"/>\n'
-        simbolos += f'''
-      <symbol alpha="1" type="fill" name="{i}">
+        symbol_name = str(i)
+        categorias += f'<category render="true" symbol="{symbol_name}" value="{nome}" label="{nome}"/>\n'
+        simbolos += f"""
+      <symbol alpha="1" type="fill" name="{symbol_name}">
         <layer pass="0" class="SimpleFill" locked="0">
           <prop k="color" v="{r},{g},{b},255"/>
-          <prop k="outline_color" v="0,0,0,0"/>
           <prop k="outline_style" v="no"/>
-          <prop k="outline_width" v="0"/>
         </layer>
-      </symbol>'''
+      </symbol>"""
 
-    conteudo_qml = f"<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'><qgis styleCategories='AllStyleCategories' version='3.28.0'><renderer-v2 attr='class_name' type='categorizedSymbol'><categories>{categorias}</categories><symbols>{simbolos}</symbols></renderer-v2></qgis>"
-    with open(caminho_qml, 'w', encoding='utf-8') as f: f.write(conteudo_qml)
+    conteudo_qml = f"""<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
+<qgis styleCategories="AllStyleCategories" version="3.28.0">
+  <renderer-v2 attr="class_name" type="categorizedSymbol">
+    <categories>{categorias}</categories>
+    <symbols>{simbolos}</symbols>
+  </renderer-v2>
+</qgis>"""
+    
+    with open(caminho_qml, 'w', encoding='utf-8') as f:
+        f.write(conteudo_qml)
 
-def processar_vetorizacao(input_path, output_shp, output_qml):
-    with rasterio.open(input_path) as src:
+if __name__ == "__main__":
+    load_dotenv()
+    project_root = os.getenv("PROJECT_ROOT")
+    if not project_root:
+        raise ValueError("A variável PROJECT_ROOT não foi encontrada.")
+
+    if len(sys.argv) >= 3:
+        CODE_MUNI = int(sys.argv[1])
+        ANO = str(sys.argv[2])
+    else:
+        CODE_MUNI = int(os.environ.get('CODE_MUNI', 0))
+        ANO = str(os.environ.get('ANO', ''))
+
+    if not CODE_MUNI or not ANO:
+        sys.exit(1)
+
+    diretorio_reports = os.path.join(project_root, "reports")
+    json_mapbiomas = os.path.join(diretorio_reports, f"{CODE_MUNI}_{ANO}.json")
+
+    with open(json_mapbiomas, 'r', encoding='utf-8') as f:
+        dados_mb = json.load(f)
+        
+    caminho_mapbiomas = dados_mb.get("arquivo_mapbiomas")
+
+    pasta_saida = os.path.join(project_root, "data", "output", "classification", ANO)
+    os.makedirs(pasta_saida, exist_ok=True)
+    os.makedirs(diretorio_reports, exist_ok=True)
+    
+    prefixo = f'{CODE_MUNI}_Classificado_ForestEyes_{ANO}'
+    caminho_shp = os.path.join(pasta_saida, f"{prefixo}.shp")
+    caminho_qml = os.path.join(pasta_saida, f"{prefixo}.qml")
+
+    with rasterio.open(caminho_mapbiomas) as src:
         data = src.read(1)
         nodata_val = src.nodata if src.nodata is not None else 0
         shapes_gen = features.shapes(data.astype(np.int32), transform=src.transform)
@@ -90,50 +129,14 @@ def processar_vetorizacao(input_path, output_shp, output_qml):
         for s, v in shapes_gen:
             v_int = int(v)
             if v_int == nodata_val or v_int == 0: continue
-            
-            info = class_metadata.get(v_int, {'name': f"ID_{v_int}", 'iso_37120': '', 'iso_37122': '', 'iso_37123': ''})
-            polygons.append({
-                'properties': {
-                    'class_id': v_int, 'class_name': info['name'],
-                    'iso_37120': info['iso_37120'], 'iso_37122': info['iso_37122'], 'iso_37123': info['iso_37123']
-                },
-                'geometry': s
-            })
+            nome_classe = class_metadata[v_int]['name'] if v_int in class_metadata else f"ID_{v_int}"
+            polygons.append({'properties': {'class_id': v_int, 'class_name': nome_classe}, 'geometry': s})
 
     gdf = gpd.GeoDataFrame.from_features(polygons, crs=src.crs)
-    gdf.to_file(output_shp)
-    gerar_estilo_qml_automatico(output_qml, class_metadata)
-    return output_shp, output_qml
+    gdf.to_file(caminho_shp)
+    gerar_estilo_qml_automatico(caminho_qml, class_metadata)
 
-if __name__ == "__main__":
-    load_dotenv()
-    
-    if len(sys.argv) >= 3:
-        CODE_MUNI = int(sys.argv[1])
-        ANO = str(sys.argv[2])
-    else:
-        CODE_MUNI = int(os.environ.get('CODE_MUNI', 0))
-        ANO = os.environ.get('ANO', '')
-
-    if not CODE_MUNI or not ANO: sys.exit(1)
-
-    project_root = os.environ.get("PROJECT_ROOT")
-    diretorio_reports = os.path.join(project_root, "reports")
-    json_mapbiomas = os.path.join(diretorio_reports, f"{CODE_MUNI}_{ANO}.json")
-
-    with open(json_mapbiomas, 'r', encoding='utf-8') as f:
-        caminho_mapbiomas = json.load(f).get("arquivo_mapbiomas")
-
-    pasta_saida = os.path.join(project_root, "data", "output", "classification", ANO)
-    os.makedirs(pasta_saida, exist_ok=True)
-    
-    prefixo = f"{CODE_MUNI}_Classificado_ForestEyes_{ANO}"
-    caminho_shp = os.path.join(pasta_saida, f"{prefixo}.shp")
-    caminho_qml = os.path.join(pasta_saida, f"{prefixo}.qml")
-
-    print(f"=== CLASSIFICAÇÃO VETORIAL: {CODE_MUNI} | ANO: {ANO} ===")
-    shp_gerado, qml_gerado = processar_vetorizacao(caminho_mapbiomas, caminho_shp, caminho_qml)
-
+    dados_finais = {"code_muni": CODE_MUNI, "ano": ANO, "arquivo_shp": caminho_shp}
     json_final = os.path.join(diretorio_reports, f"{CODE_MUNI}_{ANO}_classification_results.json")
     with open(json_final, 'w', encoding='utf-8') as f:
-        json.dump({"code_muni": CODE_MUNI, "ano": ANO, "arquivo_shp": shp_gerado}, f, indent=4)
+        json.dump(dados_finais, f, indent=4, ensure_ascii=False)

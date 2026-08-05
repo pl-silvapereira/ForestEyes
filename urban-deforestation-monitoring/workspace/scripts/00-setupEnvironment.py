@@ -11,7 +11,7 @@ ee.Initialize(project='foresteyes-regioes-urbanas')
 print("Autenticado e inicializado com sucesso!")
 
 # Define o diretório raiz do projeto
-os.environ['PROJECT_ROOT'] = '/content/drive/MyDrive/Mestrado/04-Projeto ForestEyes/ForestEyes/urban-deforestation-monitoring/' # Corrigido para a raiz do repositório
+os.environ['PROJECT_ROOT'] = '/content/drive/MyDrive/Mestrado/04-Projeto ForestEyes/ForestEyes/urban-deforestation-monitoring/workspace/' # Corrigido para a raiz do repositório
 
 # Configura o código do município e o ano
 os.environ['CODE_MUNI'] = '3549904'  # São José dos Campos
