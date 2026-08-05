@@ -12,20 +12,20 @@ from dotenv import load_dotenv
 def executar_recorte_por_vetorizacao(caminho_mapbiomas, caminho_cbers, caminho_saida):
     """
     Recorta a imagem de alta resolução extraindo o formato exato dos pixels válidos
-    da imagem do MapBiomas através de vetorização on-the-fly e Geopandas[cite: 3].
+    da imagem do MapBiomas através de vetorização on-the-fly e Geopandas.
     """
     print("1/3 - Extraindo o formato geopolítico exato do raster MapBiomas...")
     with rasterio.open(caminho_mapbiomas) as mb_src:
         mb_crs = mb_src.crs
         mb_data = mb_src.read(1)
         
-        # Identifica o valor de "NoData" ou assume 0[cite: 3]
+        # Identifica o valor de "NoData" ou assume 0
         mb_nodata = mb_src.nodata if mb_src.nodata is not None else 0
         
-        # Cria uma máscara restrita apenas aos pixels que contêm dados válidos do município[cite: 3]
+        # Cria uma máscara restrita apenas aos pixels que contêm dados válidos do município
         mascara_cidade = (mb_data != mb_nodata) & (mb_data != 0)
         
-        # Transforma os clusters de pixels em geometrias vetoriais (On-The-Fly)[cite: 3]
+        # Transforma os clusters de pixels em geometrias vetoriais (On-The-Fly)
         gerador_shapes = shapes(mascara_cidade.astype('uint8'), mask=mascara_cidade, transform=mb_src.transform)
         poligonos = [shape(geom) for geom, valor in gerador_shapes if valor == 1]
         
@@ -33,25 +33,25 @@ def executar_recorte_por_vetorizacao(caminho_mapbiomas, caminho_cbers, caminho_s
             print("❌ Erro: Não foi possível identificar a área válida no MapBiomas.")
             sys.exit(1)
             
-        # Agrupa os polígonos num único objeto geométrico (caso haja feições desconexas)[cite: 3]
+        # Agrupa os polígonos num único objeto geométrico (caso haja feições desconexas)
         gdf_mb = gpd.GeoDataFrame({'geometry': poligonos}, crs=mb_crs)
         poligono_cidade = gdf_mb.geometry.unary_union
         
-        # Consolida o formato da cidade no sistema de coordenadas original[cite: 3]
+        # Consolida o formato da cidade no sistema de coordenadas original
         gdf_base = gpd.GeoDataFrame({'geometry': [poligono_cidade]}, crs=mb_crs)
 
     print("2/3 - Alinhando projeções e recortando a imagem CBERS-4A...")
     with rasterio.open(caminho_cbers) as cbers_src:
         cbers_crs = cbers_src.crs
         
-        # Reprojeta a geometria vetorial complexa para o CRS da imagem alvo[cite: 3]
+        # Reprojeta a geometria vetorial complexa para o CRS da imagem alvo
         gdf_base_alinhado = gdf_base.to_crs(cbers_crs)
         geometria_corte = [gdf_base_alinhado.geometry.iloc[0]]
         
-        # Executa o recorte utilizando a geometria exata como máscara[cite: 3]
+        # Executa o recorte utilizando a geometria exata como máscara
         out_img, out_transform = mask(cbers_src, geometria_corte, crop=True, filled=True, nodata=0)
         
-        # Atualiza os metadados espaciais[cite: 3]
+        # Atualiza os metadados espaciais
         out_meta = cbers_src.meta.copy()
         out_meta.update({
             "height": out_img.shape[1],
@@ -61,11 +61,13 @@ def executar_recorte_por_vetorizacao(caminho_mapbiomas, caminho_cbers, caminho_s
         })
 
         print("3/3 - Salvando o arquivo multiespectral final recortado...")
+        
+        # Garante que as subpastas existam antes de salvar
         os.makedirs(os.path.dirname(caminho_saida), exist_ok=True)
         
         with rasterio.open(caminho_saida, "w", **out_meta) as dest:
             dest.write(out_img)
-            # Conserva a interpretação de cores original[cite: 3]
+            # Conserva a interpretação de cores original
             dest.colorinterp = cbers_src.colorinterp
 
     print(f"\n✅ Sucesso absoluto! A imagem perfeitamente alinhada foi salva em:\n-> {caminho_saida}")
@@ -117,9 +119,9 @@ if __name__ == "__main__":
         print("[ERRO] Caminho da composição CBERS não encontrado no JSON ou o arquivo não existe no disco.")
         sys.exit(1)
 
-    # 6. Definir o caminho de saída final
+    # 6. Definir o caminho de saída final com a nova pasta "geopolitic-RGBN"
     nome_saida = f"{CODE_MUNI}_CBERS_TRUE_COLOR_CLIPPED.tif"
-    pasta_saida = os.path.join(project_root, "data", "output", "pansharpening")
+    pasta_saida = os.path.join(project_root, "data", "output", "pansharpening", "geopolitic-RGBN")
     caminho_saida = os.path.join(pasta_saida, nome_saida)
 
     print(f"==================================================")
