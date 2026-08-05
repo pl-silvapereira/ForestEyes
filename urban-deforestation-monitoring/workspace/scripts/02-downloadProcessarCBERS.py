@@ -7,8 +7,8 @@ import time
 from dotenv import load_dotenv
 from cbers4asat import Cbers4aAPI
 from cbers4asat.tools import rgbn_composite
-import rasterio as rio
-from rasterio.plot import show
+# import rasterio as rio
+# from rasterio.plot import show
 
 def baixar_e_processar_cbers():
     # 1. Capturar argumentos da linha de comando (.cmd)
@@ -28,7 +28,8 @@ def baixar_e_processar_cbers():
         raise ValueError("A variável PROJECT_ROOT não foi encontrada no arquivo .env.")
 
     # 3. Ler o arquivo JSON gerado pelo script 01 na pasta reports
-    caminho_json = os.path.join(project_root, "reports", f"{CODE_MUNI}.json")
+    diretorio_reports = os.path.join(project_root, "reports")
+    caminho_json = os.path.join(diretorio_reports, f"{CODE_MUNI}.json")
     
     if not os.path.exists(caminho_json):
         print(f"[ERRO CRÍTICO] O relatório JSON para o município {CODE_MUNI} não foi encontrado em:\n-> {caminho_json}")
@@ -60,6 +61,7 @@ def baixar_e_processar_cbers():
     
     os.makedirs(pasta_entrada_cbers, exist_ok=True)
     os.makedirs(pasta_saida_pansharpening, exist_ok=True)
+    os.makedirs(diretorio_reports, exist_ok=True)
 
     email_inpe = 'pereira.pedro@unifesp.br'
     print("Conectando ao catálogo LGI-CDSR do INPE...")
@@ -160,6 +162,22 @@ def baixar_e_processar_cbers():
     
     caminho_stack = os.path.join(pasta_saida_pansharpening, nome_arquivo_stack)
     print(f"\n[SUCESSO] Composição salva com sucesso em:\n-> {caminho_stack}")
+
+    # 5. Salvar o JSON de registros com os resultados desse script
+    dados_resultado = {
+        "code_muni": CODE_MUNI,
+        "nome_cidade": nome_cidade,
+        "ano_referencia": ano_referencia,
+        "id_cena_selecionada": id_cena,
+        "arquivos_bandas": arquivos_baixados,
+        "composicao_true_color": caminho_stack
+    }
+    
+    caminho_json_resultado = os.path.join(diretorio_reports, f"{CODE_MUNI}_cbers_results.json")
+    with open(caminho_json_resultado, 'w', encoding='utf-8') as f_json_res:
+        json.dump(dados_resultado, f_json_res, indent=4, ensure_ascii=False)
+        
+    print(f"[RELATÓRIO] Arquivo com o registro dos processamentos do CBERS gerado com sucesso em:\n-> {caminho_json_resultado}\n")
 
 if __name__ == "__main__":
     baixar_e_processar_cbers()
