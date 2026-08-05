@@ -61,7 +61,7 @@ def baixar_e_processar_cbers():
         location=bbox_muni,
         initial_date=date(ano_referencia, 1, 1),
         end_date=date(ano_referencia, 12, 31),
-        cloud=15, 
+        cloud=20, 
         limit=100,
         collections=['CBERS4A_WPM_L4_DN']
     )
