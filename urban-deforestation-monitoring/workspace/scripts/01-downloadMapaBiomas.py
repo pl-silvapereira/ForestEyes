@@ -39,7 +39,7 @@ def baixar_mapbiomas():
     os.makedirs(diretorio_reports, exist_ok=True)
 
     try:
-        ee.Authenticate(force=True)
+        #ee.Authenticate(force=True)
         ee.Initialize(project='foresteyes-regioes-urbanas')
         print("Earth Engine inicializado com sucesso.")
 
