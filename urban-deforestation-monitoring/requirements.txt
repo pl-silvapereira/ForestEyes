@@ -2,3 +2,4 @@ earthengine-api>=0.1.300
 geobr>=0.7.0
 requests>=2.28.0
 python-dotenv>=1.0.0
+google-api-python-client>=2.0.0
