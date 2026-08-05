@@ -3,7 +3,7 @@ import ee
 import geobr
 import json
 import os
-import requests
+import unicodedata
 from dotenv import load_dotenv
 
 # 1. Capturar argumentos da linha de comando (.cmd)
@@ -23,12 +23,14 @@ project_root = os.getenv("PROJECT_ROOT")
 if not project_root:
     raise ValueError("A variável PROJECT_ROOT não foi encontrada no arquivo .env.")
 
-# Diretório de destino local: workspace\data\input\MapBiomas
+# Diretório de destino local (para referência futura)
 diretorio_destino = os.path.join(project_root, "data", "input", "MapBiomas")
 os.makedirs(diretorio_destino, exist_ok=True)
 
 try:
     # 3. Autenticar e inicializar a API do Earth Engine
+    # Força a reautenticação caso o token precise de renovação
+    ee.Authenticate(force=True)
     ee.Initialize(project='foresteyes-regioes-urbanas')
     print("Earth Engine inicializado com sucesso.")
 
@@ -58,9 +60,7 @@ try:
     print("Limites oficiais carregados com sucesso no Earth Engine!")
 
     # 5. Calcular e exibir os 4 pontos (Norte, Sul, Leste e Oeste) para o INPE
-    # Obtém os limites retangulares (bounds) da geometria do município
     bounds = limite_geopolitico.bounds().getInfo()['coordinates'][0]
-    # bounds retorna uma lista de 4 pontos [[lon_min, lat_min], [lon_max, lat_min], [lon_max, lat_max], [lon_min, lat_max]]
     lons = [p[0] for p in bounds]
     lats = [p[1] for p in bounds]
     
@@ -84,27 +84,35 @@ try:
     print("Recortando e mascarando o fundo externo para NoData...")
     imagem_recortada = mapbiomas_10m.clip(limite_geopolitico).unmask(0).short()
 
-    # 7. Iniciar o download direto para o diretório local
-    nome_arquivo = f'mapbiomas_lulc_10m_{nome_cidade.lower().replace(" ", "_")}_{ANO}.tif'
-    caminho_completo = os.path.join(diretorio_destino, nome_arquivo)
+    # 7. Configurar a exportação via Tarefa Assíncrona para o Google Drive
+    def limpar_para_ee(texto):
+        nfkd = unicodedata.normalize('NFKD', texto)
+        return "".join([c for c in nfkd if not unicodedata.combining(c)]).replace(" ", "_")
+
+    cidade_limpa = limpar_para_ee(nome_cidade)
+    nome_arquivo = f'mapbiomas_lulc_10m_{cidade_limpa.lower()}_{ANO}'
     
-    print("Gerando URL de download no Earth Engine (isso pode levar alguns minutos)...")
-    url_download = imagem_recortada.getDownloadURL({
-        'region': limite_geopolitico,
-        'scale': 10,
-        'format': 'GEO_TIFF'
-    })
+    print("Enviando tarefa de exportação para o Google Drive...")
     
-    print(f"Baixando o arquivo para: {caminho_completo} ...")
-    resposta = requests.get(url_download)
+    tarefa = ee.batch.Export.image.toDrive(
+        image=imagem_recortada,
+        description=f'Export_{nome_arquivo}', # Sanitizado sem acentos
+        folder='Mestrado/04-Projeto ForestEyes/ForestEyes/urban-deforestation-monitoring/workspace/data/input/MapBiomas',        
+        fileNamePrefix=nome_arquivo,
+        region=limite_geopolitico.bounds(),
+        scale=10,                             # Resolução nativa de 10 metros mantida
+        maxPixels=1e9,
+        fileFormat='GeoTIFF',
+        formatOptions={
+            'noData': 0                       # Preserva a transparência nas bordas
+        }
+    )
+
+    tarefa.start()
     
-    if resposta.status_code == 200:
-        with open(caminho_completo, 'wb') as f:
-            f.write(resposta.content)
-        print("\n[SUCESSO] Download concluído com fundo transparente!")
-        print(f"Arquivo salvo em: {caminho_completo}")
-    else:
-        print(f"\n[ERRO] Falha no download. Código HTTP: {resposta.status_code}")
+    print("\n[SUCESSO] Tarefa de exportação iniciada na nuvem do Google!")
+    print(f"O arquivo '{nome_arquivo}.tif' será salvo na pasta 'MapBiomas_Downloads' do seu Google Drive.")
+    print("Acompanhe o progresso no Code Editor do Earth Engine (aba Tasks) ou aguarde concluir para mover para a pasta local.")
 
 except Exception as e:
     print(f"\n[ERRO CRÍTICO] Ocorreu um erro durante o processamento: {e}")
