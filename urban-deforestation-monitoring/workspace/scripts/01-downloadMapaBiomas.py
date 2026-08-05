@@ -85,16 +85,13 @@ try:
         nfkd = unicodedata.normalize('NFKD', texto)
         return "".join([c for c in nfkd if not unicodedata.combining(c)]).replace(" ", "_")
 
-<<<<<<< HEAD
     try:
-        #ee.Authenticate(force=True)
-        ee.Initialize(project='foresteyes-regioes-urbanas')
-        print("Earth Engine inicializado com sucesso.")
-=======
+    #ee.Authenticate(force=True)
+    ee.Initialize(project='foresteyes-regioes-urbanas')
+    print("Earth Engine inicializado com sucesso.")
     cidade_limpa = limpar_para_ee(nome_cidade)
     nome_arquivo_mapbiomas = f'mapbiomas_lulc_10m_{cidade_limpa.lower()}_{ANO}.tif'
     caminho_mapbiomas_local = os.path.join(diretorio_data_input, nome_arquivo_mapbiomas)
->>>>>>> parent of f902290 (inserido o contexto do ano nos arquivos e tambem adicionado um orchestrator para realizar a chamada do periodo de anos.)
 
     dados_json = {
         "code_muni": CODE_MUNI,
