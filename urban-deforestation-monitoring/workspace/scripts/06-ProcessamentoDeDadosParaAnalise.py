@@ -1,60 +1,32 @@
-import os
 import sys
+import os
 import subprocess
 from dotenv import load_dotenv
 
-def main():
-    # 1. Validar se o município e o ano foram passados por argumento
-    # Uso correto: python 06-ProcessamentoDeDadosParaAnalise.py <code_muni> <ano>
+def executar_pipeline():
+    # Verifica se os argumentos mínimos foram passados (Script + Município + Pelo menos 1 Ano)
     if len(sys.argv) < 3:
-        print("❌ Erro: Parâmetros insuficientes.")
-        print("Uso correto: python 06-ProcessamentoDeDadosParaAnalise.py <code_muni> <ano>")
-        print("Exemplo: python 06-ProcessamentoDeDadosParaAnalise.py 3549904 2023")
+        print("Erro: Parâmetros insuficientes.")
+        print("Uso correto: python 06-ProcessamentoDeDadosParaAnalise.py <CODE_MUNI> <ANO_1> [ANO_2] [ANO_3] ...")
+        print("Exemplo: python 06-ProcessamentoDeDadosParaAnalise.py 3549904 2023 2024")
         sys.exit(1)
 
     code_muni = sys.argv[1]
-    ano = sys.argv[2]
+    anos_para_processar = sys.argv[2:]
 
-    # 2. Carregar variáveis de ambiente
     load_dotenv()
-    project_root = os.getenv('PROJECT_ROOT')
-
+    project_root = os.environ.get("PROJECT_ROOT")
+    
     if not project_root:
-        raise ValueError("A variável PROJECT_ROOT não foi encontrada no arquivo .env.")
+        # Tenta inferir o diretório caso não esteja no .env
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        print(f"Aviso: PROJECT_ROOT não encontrado. Inferindo como: {project_root}")
 
-    # 3. Criação automática de todos os diretórios e subpastas no Google Drive se não existirem
-    reports_dir = os.path.join(project_root, "reports")
-    data_input_mapbiomas = os.path.join(project_root, "data", "input", "MapBiomas", str(ano))
-    data_input_cbers = os.path.join(project_root, "data", "input", "CBERS-4A-WPM", str(ano))
-    data_output_cbers = os.path.join(project_root, "data", "output", "pansharpening", str(ano))
-    geopolitic_rgbn = os.path.join(project_root, "data", "output", "pansharpening", "geopolitic-RGBN", str(ano))
-    multibands_dir = os.path.join(project_root, "data", "output", "pansharpening", "multispectral-RGBN-bands", str(ano))
-    classification_dir = os.path.join(project_root, "data", "output", "classification", str(ano))
-
-    diretorios_necessarios = [
-        reports_dir, 
-        data_input_mapbiomas, 
-        data_input_cbers, 
-        data_output_cbers, 
-        geopolitic_rgbn, 
-        multibands_dir, 
-        classification_dir
-    ]
-
-    print("Verificando e criando diretórios de trabalho automaticamente...")
-    for diretorio in diretorios_necessarios:
-        os.makedirs(diretorio, exist_ok=True)
-
-    print("=" * 70)
-    print(f"🚀 INICIANDO ORQUESTRAÇÃO DE DADOS URBANOS")
-    print(f"📍 MUNICÍPIO: {code_muni} | 📅 ANO DE ANÁLISE: {ano}")
-    print("=" * 70)
-
-    # 4. Localizar o diretório onde os scripts estão salvos (mesma pasta do script 06)
+    # Força a buscar os scripts na MESMA pasta onde este orquestrador (Script 06) está salvo
     diretorio_scripts = os.path.dirname(os.path.abspath(__file__))
 
-    # Lista dos 5 scripts na ordem correta de execução
-    scripts = [
+    # Lista exata dos scripts em ordem de execução
+    scripts_da_esteira = [
         "01-downloadMapaBiomas.py",
         "02-downloadProcessarCBERS.py",
         "03-recortarCBERS.py",
@@ -62,35 +34,43 @@ def main():
         "05-gerarClassificacaoMapBiomas.py"
     ]
 
-    # Injetar o ano nas variáveis de ambiente locais para os scripts filhos
-    env = os.environ.copy()
-    env['ANO'] = str(ano)
+    print(f"\n{'='*70}")
+    print(f"🚀 INICIANDO ORQUESTRAÇÃO DE DADOS URBANOS")
+    print(f"📍 MUNICÍPIO: {code_muni}")
+    print(f"📅 ANOS NA FILA: {', '.join(anos_para_processar)}")
+    print(f"{'='*70}\n")
 
-    # 5. Execução sequencial robusta
-    for script in scripts:
-        caminho_script = os.path.join(diretorio_scripts, script)
-        
-        if not os.path.exists(caminho_script):
-            print(f"❌ [ERRO CRÍTICO] Script não encontrado: {caminho_script}")
-            sys.exit(1)
+    for ano in anos_para_processar:
+        print(f"\n{'#'*70}")
+        print(f"▶ PROCESSANDO CICLO: ANO {ano}")
+        print(f"{'#'*70}")
 
-        print(f"\n---> Executando Etapa: {script}")
-        
-        # Passa explicitamente o code_muni e o ano como argumentos para cada script
-        comando = [sys.executable, caminho_script, str(code_muni), str(ano)]
-        
-        resultado = subprocess.run(comando, env=env)
+        for nome_script in scripts_da_esteira:
+            caminho_script = os.path.join(diretorio_scripts, nome_script)
+            
+            if not os.path.exists(caminho_script):
+                print(f"\n[ERRO CRÍTICO] Script não encontrado: {caminho_script}")
+                sys.exit(1)
 
-        if resultado.returncode != 0:
-            print(f"\n[FALHA] A execução do {script} falhou e retornou código de erro {resultado.returncode}.")
-            print(f"Interrompendo a esteira para o ano {ano} para evitar dados corrompidos.")
-            sys.exit(1)
+            print(f"\n---> Executando Etapa: {nome_script}")
+            
+            # Monta o comando usando sys.executable para garantir que use o mesmo Python do Colab/Venv
+            comando = [sys.executable, caminho_script, str(code_muni), str(ano)]
+            
+            try:
+                # O parâmetro check=True faz o Python levantar uma exceção se o script filho falhar
+                subprocess.run(comando, check=True)
+            except subprocess.CalledProcessError as e:
+                print(f"\n[FALHA] A execução do {nome_script} falhou e retornou código de erro {e.returncode}.")
+                print(f"Interrompendo a esteira para o ano {ano} para evitar dados corrompidos.")
+                break # Quebra o loop dos scripts e vai para o próximo ano (se houver)
+        else:
+            # Esse else pertence ao for (só executa se o loop não for interrompido por um break)
+            print(f"\n{'='*70}")
+            print(f"✅ CICLO {ano} FINALIZADO COM SUCESSO EM TODAS AS 5 ETAPAS!")
+            print(f"{'='*70}")
 
-        print(f"✓ {script} concluído com sucesso.")
-
-    print("\n" + "=" * 70)
-    print(f"✅ CICLO COMPLETO DO ANO {ano} FINALIZADO COM SUCESSO!")
-    print("=" * 70)
+    print("\n🎉 ORQUESTRAÇÃO FINALIZADA. Todos os anos da fila foram processados!")
 
 if __name__ == "__main__":
-    main()
+    executar_pipeline()
