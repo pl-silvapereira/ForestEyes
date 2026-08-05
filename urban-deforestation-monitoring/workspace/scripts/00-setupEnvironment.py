@@ -23,7 +23,7 @@ print(f"  CODE_MUNI: {os.environ['CODE_MUNI']}")
 print(f"  ANO: {os.environ['ANO']}")
 
 # Define o caminho para o arquivo requirements.txt
-requirements_path = os.path.join(os.environ['PROJECT_ROOT'], '../requirements.txt') # Usa PROJECT_ROOT corrigido
+requirements_path = os.path.join(os.environ['PROJECT_ROOT'], 'requirements.txt') # Usa PROJECT_ROOT corrigido
 
 # Instala os pacotes do arquivo requirements.txt usando subprocess
 try:

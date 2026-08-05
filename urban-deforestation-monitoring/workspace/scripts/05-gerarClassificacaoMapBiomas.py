@@ -89,21 +89,14 @@ def gerar_estilo_qml_automatico(caminho_qml, metadata):
         f.write(conteudo_qml)
 
 if __name__ == "__main__":
-    load_dotenv()
-    project_root = os.getenv("PROJECT_ROOT")
-    if not project_root:
-        raise ValueError("A variável PROJECT_ROOT não foi encontrada.")
-
-    if len(sys.argv) >= 3:
-        CODE_MUNI = int(sys.argv[1])
-        ANO = str(sys.argv[2])
-    else:
-        CODE_MUNI = int(os.environ.get('CODE_MUNI', 0))
-        ANO = str(os.environ.get('ANO', ''))
-
-    if not CODE_MUNI or not ANO:
+    if len(sys.argv) < 3:
         sys.exit(1)
 
+    CODE_MUNI = int(sys.argv[1])
+    ANO = sys.argv[2]
+
+    load_dotenv()
+    project_root = os.getenv("PROJECT_ROOT")
     diretorio_reports = os.path.join(project_root, "reports")
     json_mapbiomas = os.path.join(diretorio_reports, f"{CODE_MUNI}_{ANO}.json")
 
@@ -114,7 +107,6 @@ if __name__ == "__main__":
 
     pasta_saida = os.path.join(project_root, "data", "output", "classification", ANO)
     os.makedirs(pasta_saida, exist_ok=True)
-    os.makedirs(diretorio_reports, exist_ok=True)
     
     prefixo = f'{CODE_MUNI}_Classificado_ForestEyes_{ANO}'
     caminho_shp = os.path.join(pasta_saida, f"{prefixo}.shp")
