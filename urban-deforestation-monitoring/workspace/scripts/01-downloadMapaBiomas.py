@@ -1,4 +1,6 @@
 import sys
+import time
+import shutil
 import ee
 import geobr
 import json
@@ -23,9 +25,12 @@ project_root = os.getenv("PROJECT_ROOT")
 if not project_root:
     raise ValueError("A variável PROJECT_ROOT não foi encontrada no arquivo .env.")
 
-# Diretório de destino local (caso queira manipular localmente no futuro)
-diretorio_destino = os.path.join(project_root, "data", "input", "MapBiomas")
-os.makedirs(diretorio_destino, exist_ok=True)
+# Definir e criar diretórios de trabalho locais necessários
+diretorio_data_input = os.path.join(project_root, "data", "input", "MapBiomas")
+diretorio_reports = os.path.join(project_root, "reports")
+
+os.makedirs(diretorio_data_input, exist_ok=True)
+os.makedirs(diretorio_reports, exist_ok=True)
 
 try:
     # 3. Autenticar e inicializar a API do Earth Engine
@@ -68,14 +73,34 @@ try:
     sul = min(lats)
     norte = max(lats)
 
-    print("\n--- COORDENADAS DOS 4 PONTOS (EXTREMAS) PARA O INPE ---")
+    print("\n--- COORDENADAS DOS 4 PONTOS (EXTREMAS) PARAO INPE ---")
     print(f"Norte (Latitude Máxima):  {norte}")
     print(f"Sul (Latitude Mínima):    {sul}")
     print(f"Leste (Longitude Máxima): {leste}")
     print(f"Oeste (Longitude Mínima): {oeste}")
     print("------------------------------------------------------\n")
 
-    # 6. Carregar o Asset público do MapBiomas de 10 metros
+    # 6. Salvar o arquivo JSON com as coordenadas extremas em workspace/reports/<CODE_MUNI>.json
+    dados_json = {
+        "code_muni": CODE_MUNI,
+        "nome_cidade": nome_cidade,
+        "uf": uf,
+        "ano": ANO,
+        "coordenadas_extremas": {
+            "norte": norte,
+            "sul": sul,
+            "leste": leste,
+            "oeste": oeste
+        }
+    }
+    
+    caminho_json = os.path.join(diretorio_reports, f"{CODE_MUNI}.json")
+    with open(caminho_json, 'w', encoding='utf-8') as f_json:
+        json.dump(dados_json, f_json, indent=4, ensure_ascii=False)
+    
+    print(f"[RELATÓRIO] Arquivo JSON gerado com sucesso em:\n-> {caminho_json}\n")
+
+    # 7. Carregar o Asset público do MapBiomas de 10 metros
     BANDA_ANO = f'classification_{ANO}'
     asset_mapbiomas_10m = 'projects/mapbiomas-public/assets/brazil/lulc_10m/collection2/mapbiomas_10m_collection2_integration_v1'
     mapbiomas_10m = ee.Image(asset_mapbiomas_10m).select(BANDA_ANO)
@@ -83,38 +108,83 @@ try:
     print("Recortando e mascarando o fundo externo para NoData...")
     imagem_recortada = mapbiomas_10m.clip(limite_geopolitico).unmask(0).short()
 
-    # 7. Configurar a exportação via Tarefa Assíncrona para o Google Drive direcionando para a pasta específica
+    # 8. Configurar a exportação via Tarefa Assíncrona utilizando pasta temporária
     def limpar_para_ee(texto):
         nfkd = unicodedata.normalize('NFKD', texto)
         return "".join([c for c in nfkd if not unicodedata.combining(c)]).replace(" ", "_")
 
     cidade_limpa = limpar_para_ee(nome_cidade)
-    nome_arquivo = f'mapbiomas_lulc_10m_{cidade_limpa.lower()}_{ANO}'
+    nome_arquivo = f'mapbiomas_lulc_10m_{cidade_limpa.lower()}_{ANO}.tif'
     
-    # Caminho exato dentro do Google Drive
-    pasta_drive = 'Mestrado/04-Projeto ForestEyes/ForestEyes/urban-deforestation-monitoring/workspace/data/input/MapBiomas'
+    PASTA_TEMPORARIA = 'MapBiomas_Temp'
     
-    print(f"Enviando tarefa de exportação para o Google Drive na pasta:\n-> {pasta_drive}")
+    print(f"Enviando tarefa para a pasta temporária '{PASTA_TEMPORARIA}' no Google Drive...")
     
     tarefa = ee.batch.Export.image.toDrive(
         image=imagem_recortada,
-        description=f'Export_{nome_arquivo}',
-        folder=pasta_drive,                  # Caminho completo estruturado no Drive
-        fileNamePrefix=nome_arquivo,
+        description=f'Export_mapbiomas_lulc_10m_{cidade_limpa.lower()}_{ANO}',
+        folder=PASTA_TEMPORARIA,
+        fileNamePrefix=f'mapbiomas_lulc_10m_{cidade_limpa.lower()}_{ANO}',
         region=limite_geopolitico.bounds(),
-        scale=10,                            # Resolução nativa de 10 metros mantida
+        scale=10,
         maxPixels=1e9,
         fileFormat='GeoTIFF',
         formatOptions={
-            'noData': 0                      # Preserva a transparência nas bordas
+            'noData': 0
         }
     )
 
     tarefa.start()
+    print(f"Tarefa ID: {tarefa.id} iniciada. Aguardando o processamento na nuvem...")
+
+    # 9. Loop de monitoramento (Polling) até a conclusão da tarefa
+    while True:
+        status = ee.data.getTaskStatus(tarefa.id)[0]
+        state = status.get('state')
+        print(f"Status atual da tarefa: {state}...")
+        
+        if state == 'COMPLETED':
+            print("\n[SUCESSO] Processamento no Earth Engine concluído!")
+            break
+        elif state in ['FAILED', 'CANCELLED']:
+            error_msg = status.get('error_message', 'Erro desconhecido')
+            raise Exception(f"A exportação falhou ou foi cancelada. Status: {state}. Erro: {error_msg}")
+        
+        time.sleep(20)
+
+    # 10. Organização local via caminhos do projeto (`diretorio_data_input`)
+    # Como o Google Drive Desktop sincroniza a nuvem, a pasta temporária aparecerá na raiz do Drive local.
+    # Assumindo que a raiz do Drive está na mesma estrutura ou subindo níveis a partir de project_root:
+    # project_root = ...\workspace -> Subindo 4 níveis chegamos na raiz do Drive (onde ficam as pastas do projeto e a pasta temp)
+    raiz_drive = os.path.abspath(os.path.join(project_root, "../../../../.."))
+    caminho_temp_local = os.path.join(raiz_drive, PASTA_TEMPORARIA)
+
+    print("Aguardando a sincronização local do arquivo pelo Google Drive...")
+    arquivo_origem = os.path.join(caminho_temp_local, nome_arquivo)
     
-    print("\n[SUCESSO] Tarefa de exportação iniciada na nuvem do Google!")
-    print(f"O arquivo '{nome_arquivo}.tif' será gerado automaticamente dentro da pasta especificada no seu Google Drive.")
-    print("Acompanhe o andamento no painel Tasks do Earth Engine Code Editor.")
+    # Loop de espera caso o Google Drive Desktop demore alguns segundos para sincronizar o .tif
+    tentativas = 0
+    while not os.path.exists(arquivo_origem) and tentativas < 15:
+        time.sleep(5)
+        tentativas += 1
+
+    if os.path.exists(arquivo_origem):
+        arquivo_destino = os.path.join(diretorio_data_input, nome_arquivo)
+        
+        # Move o arquivo para a pasta correta (diretorio_data_input)
+        shutil.move(arquivo_origem, arquivo_destino)
+        print(f"[SUCESSO] Arquivo movido para:\n-> {arquivo_destino}")
+        
+        # Remove a pasta temporária local vazia
+        try:
+            os.rmdir(caminho_temp_local)
+            print("[LIMPEZA] Pasta temporária local 'MapBiomas_Temp' removida.")
+        except OSError:
+            pass
+    else:
+        print(f"[AVISO] O arquivo gerado não foi encontrado localmente em '{caminho_temp_local}'. Verifique se o Google Drive Desktop concluiu a sincronização.")
+
+    print("\n[PROCESSO FINALIZADO COM SUCESSO]")
 
 except Exception as e:
     print(f"\n[ERRO CRÍTICO] Ocorreu um erro durante o processamento: {e}")
