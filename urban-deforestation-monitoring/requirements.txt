@@ -8,3 +8,4 @@ geomet>=0.2.1
 geojson>=2.5.0
 geopandas>=0.14.0
 shapely>=2.0.0
+Pillow>=10.0.0
