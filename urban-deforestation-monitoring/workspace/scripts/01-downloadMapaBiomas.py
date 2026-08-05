@@ -97,7 +97,7 @@ try:
     tarefa = ee.batch.Export.image.toDrive(
         image=imagem_recortada,
         description=f'Export_{nome_arquivo}', # Sanitizado sem acentos
-        folder='Mestrado/04-Projeto ForestEyes/ForestEyes/urban-deforestation-monitoring/workspace/data/input/MapBiomas',        
+        folder=diretorio_destino,        
         fileNamePrefix=nome_arquivo,
         region=limite_geopolitico.bounds(),
         scale=10,                             # Resolução nativa de 10 metros mantida
@@ -111,7 +111,7 @@ try:
     tarefa.start()
     
     print("\n[SUCESSO] Tarefa de exportação iniciada na nuvem do Google!")
-    print(f"O arquivo '{nome_arquivo}.tif' será salvo na pasta 'MapBiomas_Downloads' do seu Google Drive.")
+    print(f"O arquivo '{nome_arquivo}.tif' será salvo na pasta '/Mestrado/04-Projeto ForestEyes/ForestEyes/urban-deforestation-monitoring/workspace/data/input/MapBiomas' do seu Google Drive.")
     print("Acompanhe o progresso no Code Editor do Earth Engine (aba Tasks) ou aguarde concluir para mover para a pasta local.")
 
 except Exception as e:
