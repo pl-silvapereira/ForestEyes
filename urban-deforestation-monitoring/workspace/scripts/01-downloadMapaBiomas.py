@@ -80,7 +80,15 @@ try:
     print(f"Oeste (Longitude Mínima): {oeste}")
     print("------------------------------------------------------\n")
 
-    # 6. Salvar o arquivo JSON com as coordenadas extremas em workspace/reports/<CODE_MUNI>.json
+    # 6. Salvar o arquivo JSON com as coordenadas extremas e caminho do arquivo MapBiomas
+    def limpar_para_ee(texto):
+        nfkd = unicodedata.normalize('NFKD', texto)
+        return "".join([c for c in nfkd if not unicodedata.combining(c)]).replace(" ", "_")
+
+    cidade_limpa = limpar_para_ee(nome_cidade)
+    nome_arquivo_mapbiomas = f'mapbiomas_lulc_10m_{cidade_limpa.lower()}_{ANO}.tif'
+    caminho_mapbiomas_local = os.path.join(diretorio_data_input, nome_arquivo_mapbiomas)
+
     dados_json = {
         "code_muni": CODE_MUNI,
         "nome_cidade": nome_cidade,
@@ -91,7 +99,8 @@ try:
             "sul": sul,
             "leste": leste,
             "oeste": oeste
-        }
+        },
+        "arquivo_mapbiomas": caminho_mapbiomas_local # <--- Nova linha armazenando o caminho
     }
     
     caminho_json = os.path.join(diretorio_reports, f"{CODE_MUNI}.json")
