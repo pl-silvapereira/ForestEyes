@@ -23,13 +23,12 @@ project_root = os.getenv("PROJECT_ROOT")
 if not project_root:
     raise ValueError("A variável PROJECT_ROOT não foi encontrada no arquivo .env.")
 
-# Diretório de destino local (para referência futura)
+# Diretório de destino local (caso queira manipular localmente no futuro)
 diretorio_destino = os.path.join(project_root, "data", "input", "MapBiomas")
 os.makedirs(diretorio_destino, exist_ok=True)
 
 try:
     # 3. Autenticar e inicializar a API do Earth Engine
-    # Força a reautenticação caso o token precise de renovação
     ee.Authenticate(force=True)
     ee.Initialize(project='foresteyes-regioes-urbanas')
     print("Earth Engine inicializado com sucesso.")
@@ -84,7 +83,7 @@ try:
     print("Recortando e mascarando o fundo externo para NoData...")
     imagem_recortada = mapbiomas_10m.clip(limite_geopolitico).unmask(0).short()
 
-    # 7. Configurar a exportação via Tarefa Assíncrona para o Google Drive
+    # 7. Configurar a exportação via Tarefa Assíncrona para o Google Drive direcionando para a pasta específica
     def limpar_para_ee(texto):
         nfkd = unicodedata.normalize('NFKD', texto)
         return "".join([c for c in nfkd if not unicodedata.combining(c)]).replace(" ", "_")
@@ -92,27 +91,30 @@ try:
     cidade_limpa = limpar_para_ee(nome_cidade)
     nome_arquivo = f'mapbiomas_lulc_10m_{cidade_limpa.lower()}_{ANO}'
     
-    print("Enviando tarefa de exportação para o Google Drive...")
+    # Caminho exato dentro do Google Drive
+    pasta_drive = 'Mestrado/04-Projeto ForestEyes/ForestEyes/urban-deforestation-monitoring/workspace/data/input/MapBiomas'
+    
+    print(f"Enviando tarefa de exportação para o Google Drive na pasta:\n-> {pasta_drive}")
     
     tarefa = ee.batch.Export.image.toDrive(
         image=imagem_recortada,
-        description=f'Export_{nome_arquivo}', # Sanitizado sem acentos
-        folder=diretorio_destino,        
+        description=f'Export_{nome_arquivo}',
+        folder=pasta_drive,                  # Caminho completo estruturado no Drive
         fileNamePrefix=nome_arquivo,
         region=limite_geopolitico.bounds(),
-        scale=10,                             # Resolução nativa de 10 metros mantida
+        scale=10,                            # Resolução nativa de 10 metros mantida
         maxPixels=1e9,
         fileFormat='GeoTIFF',
         formatOptions={
-            'noData': 0                       # Preserva a transparência nas bordas
+            'noData': 0                      # Preserva a transparência nas bordas
         }
     )
 
     tarefa.start()
     
     print("\n[SUCESSO] Tarefa de exportação iniciada na nuvem do Google!")
-    print(f"O arquivo '{nome_arquivo}.tif' será salvo na pasta '/Mestrado/04-Projeto ForestEyes/ForestEyes/urban-deforestation-monitoring/workspace/data/input/MapBiomas' do seu Google Drive.")
-    print("Acompanhe o progresso no Code Editor do Earth Engine (aba Tasks) ou aguarde concluir para mover para a pasta local.")
+    print(f"O arquivo '{nome_arquivo}.tif' será gerado automaticamente dentro da pasta especificada no seu Google Drive.")
+    print("Acompanhe o andamento no painel Tasks do Earth Engine Code Editor.")
 
 except Exception as e:
     print(f"\n[ERRO CRÍTICO] Ocorreu um erro durante o processamento: {e}")
