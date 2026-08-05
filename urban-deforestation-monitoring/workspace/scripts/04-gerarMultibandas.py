@@ -1,5 +1,5 @@
-import sys
 import os
+import sys
 import json
 import itertools
 import numpy as np
@@ -9,89 +9,98 @@ from dotenv import load_dotenv
 
 def aplicar_stretch_contraste(banda_matriz):
     """
-    Aplica um stretch linear de contraste (2% - 98%) para visualização.
-    Converte a matriz original (geralmente uint16) para uint8.
+    Aplica um stretch linear de contraste (2% - 98%) para normalização e visualização[cite: 3].
     """
     banda_mascarada = np.ma.masked_equal(banda_matriz, 0)
+    
+    # Se a matriz for totalmente vazia (apenas NoData), retorna zeros
+    if banda_mascarada.count() == 0:
+        return np.zeros_like(banda_matriz, dtype=np.uint8)
+        
     p2, p98 = np.percentile(banda_mascarada.compressed(), (2, 98))
+    
+    # Evita divisão por zero caso a banda seja homogênea
+    if p98 == p2:
+        return np.uint8(np.clip(banda_matriz, 0, 1) * 255)
+        
     banda_normalizada = np.clip((banda_matriz - p2) / (p98 - p2), 0, 1)
     return np.uint8(banda_normalizada * 255)
 
-def gerar_composicoes(caminho_arquivo, diretorio_tif, diretorio_png, code_muni):
+def gerar_multibandas(caminho_arquivo, diretorio_saida_tif, diretorio_saida_png):
     """
-    Lê o arquivo multiespectral único, gera permutações e exporta TIFs e PNGs.
-    Retorna um dicionário com os metadados dos arquivos gerados.
+    Lê o arquivo multiespectral recortado, gera as 24 permutações
+    e exporta como PNGs leves e GeoTIFFs georreferenciados.
     """
-    os.makedirs(diretorio_tif, exist_ok=True)
-    os.makedirs(diretorio_png, exist_ok=True)
+    os.makedirs(diretorio_saida_tif, exist_ok=True)
+    os.makedirs(diretorio_saida_png, exist_ok=True)
     
     bandas_processadas = {}
-    arquivos_gerados = {"tif": {}, "png": {}}
-    
-    # Nomes das bandas conforme a entrada
-    nomes_bandas = ['B1_Azul', 'B2_Verde', 'B3_Vermelho', 'B4_NIR']
+    nomes_bandas = ['B1_Azul', 'B2_Verde', 'B3_Vermelho', 'B4_NIR'][cite: 3]
     
     print(f"Lendo arquivo base recortado:\n-> {caminho_arquivo}")
     
+    arquivos_gerados = {"tif": [], "png": []}
+    
     with rasterio.open(caminho_arquivo) as src:
-        # Prepara os metadados para salvar os arquivos TIF (3 bandas, uint8)
-        metadados_tif = src.meta.copy()
-        metadados_tif.update({
-            'count': 3, 
-            'dtype': 'uint8', 
+        # 1. Copia os metadados espaciais (CRS, transform) para manter como GeoTIFF autêntico
+        metadados = src.meta.copy()
+        metadados.update({
+            'count': 3,          # A saída terá 3 bandas (RGB)
+            'dtype': 'uint8',    # Tipo de dado após o stretch
             'driver': 'GTiff',
             'nodata': 0
         })
         
-        # Lê cada uma das 4 bandas do arquivo único
+        # 2. Lê e processa as 4 bandas da imagem fonte[cite: 3]
+        # Assume-se que a imagem original tem as bandas na ordem: 1, 2, 3, 4
         for i, nome in enumerate(nomes_bandas, start=1):
             matriz = src.read(i)
             bandas_processadas[nome] = aplicar_stretch_contraste(matriz)
             
-    # Geração das permutações (24 combinações)
-    todas_combinacoes = list(itertools.permutations(nomes_bandas, 3))
-    print(f"\nGerando {len(todas_combinacoes)} composições em TIF e PNG...")
+    # 3. Geração das 24 permutações possíveis[cite: 3]
+    todas_combinacoes = list(itertools.permutations(nomes_bandas, 3))[cite: 3]
+    print(f"\nGerando {len(todas_combinacoes)} composições (GeoTIFF e PNG)...")
     
-    for idx, composicao in enumerate(todas_combinacoes, start=1):
+    for composicao in todas_combinacoes:
         r, g, b = composicao
-        nome_base = f"{code_muni}_{r}_{g}_{b}"
         
         matriz_r = bandas_processadas[r]
         matriz_g = bandas_processadas[g]
         matriz_b = bandas_processadas[b]
         
-        # ---------------------------------------------------------
-        # 1. EXPORTAÇÃO EM PNG LEVE
-        # ---------------------------------------------------------
-        imagem_rgb = np.dstack((matriz_r, matriz_g, matriz_b))
-        img = Image.fromarray(imagem_rgb)
+        # -----------------------------------------------------
+        # EXPORTAÇÃO EM PNG LEVE
+        # -----------------------------------------------------
+        imagem_rgb = np.dstack((matriz_r, matriz_g, matriz_b))[cite: 3]
+        img = Image.fromarray(imagem_rgb)[cite: 3]
         
-        # Compressão/Redimensionamento proporcional (Max: 1920px)
-        largura_maxima = 1920
+        largura_maxima = 1920[cite: 3]
         if img.width > largura_maxima:
-            proporcao = largura_maxima / img.width
-            nova_altura = int(img.height * proporcao)
-            img = img.resize((largura_maxima, nova_altura), Image.Resampling.LANCZOS)
+            proporcao = largura_maxima / img.width[cite: 3]
+            nova_altura = int(img.height * proporcao)[cite: 3]
+            img = img.resize((largura_maxima, nova_altura), Image.Resampling.LANCZOS)[cite: 3]
         
-        nome_png = f"{nome_base}.png"
-        caminho_png = os.path.join(diretorio_png, nome_png)
-        img.save(caminho_png, optimize=True)
-        arquivos_gerados["png"][nome_base] = caminho_png
+        nome_png = f"preview_{r}_{g}_{b}.png"[cite: 3]
+        caminho_png = os.path.join(diretorio_saida_png, nome_png)[cite: 3]
+        img.save(caminho_png, optimize=True)[cite: 3]
+        arquivos_gerados["png"].append(caminho_png)
         
-        # ---------------------------------------------------------
-        # 2. EXPORTAÇÃO EM TIF
-        # ---------------------------------------------------------
-        nome_tif = f"{nome_base}.tif"
-        caminho_tif = os.path.join(diretorio_tif, nome_tif)
+        # -----------------------------------------------------
+        # EXPORTAÇÃO EM GEOTIFF
+        # -----------------------------------------------------
+        nome_tif = f"composicao_{r}_{g}_{b}.tif"
+        caminho_tif = os.path.join(diretorio_saida_tif, nome_tif)
         
-        with rasterio.open(caminho_tif, 'w', **metadados_tif) as dest:
-            dest.write(matriz_r, 1) 
-            dest.write(matriz_g, 2) 
+        with rasterio.open(caminho_tif, 'w', **metadados) as dest:
+            dest.write(matriz_r, 1)
+            dest.write(matriz_g, 2)
             dest.write(matriz_b, 3)
-        arquivos_gerados["tif"][nome_base] = caminho_tif
+            
+        arquivos_gerados["tif"].append(caminho_tif)
         
-        print(f"[{idx}/24] Salvo: {r}/{g}/{b}")
+        print(f" -> ✓ {r} | {g} | {b} processada.")
 
+    print(f"\n✅ {len(todas_combinacoes)} composições criadas com sucesso!")
     return arquivos_gerados
 
 # ==========================================
@@ -113,47 +122,48 @@ if __name__ == "__main__":
         raise ValueError("A variável PROJECT_ROOT não foi encontrada no arquivo .env.")
 
     diretorio_reports = os.path.join(project_root, "reports")
-    json_entrada = os.path.join(diretorio_reports, f"{CODE_MUNI}_clipped_results.json")
+    json_cbers_recortado = os.path.join(diretorio_reports, f"{CODE_MUNI}_clipped_results.json")
 
-    # 3. Validar existência do relatório do script 03
-    if not os.path.exists(json_entrada):
-        print(f"[ERRO CRÍTICO] Arquivo JSON do recorte não encontrado:\n-> {json_entrada}")
-        print("Certifique-se de executar o Script 03 primeiro.")
+    # 3. Validar a existência do relatório da etapa anterior
+    if not os.path.exists(json_cbers_recortado):
+        print(f"[ERRO CRÍTICO] Arquivo JSON não encontrado: {json_cbers_recortado}")
+        print("Certifique-se de executar o script 03 antes de gerar as multibandas.")
         sys.exit(1)
 
-    # 4. Ler JSON para pegar o arquivo recortado
-    with open(json_entrada, 'r', encoding='utf-8') as f:
-        dados_json = json.load(f)
+    # 4. Ler JSON para encontrar a imagem TIF recortada
+    with open(json_cbers_recortado, 'r', encoding='utf-8') as f:
+        dados_recorte = json.load(f)
         
-    arquivo_recortado = dados_json.get("arquivo_cbers_recortado")
-    
-    if not arquivo_recortado or not os.path.exists(arquivo_recortado):
-        print("[ERRO] O caminho do arquivo recortado não foi encontrado ou não existe no disco.")
+    caminho_alvo = dados_recorte.get("arquivo_cbers_recortado")
+    if not caminho_alvo or not os.path.exists(caminho_alvo):
+        print("[ERRO] Arquivo CBERS recortado não encontrado no JSON ou no disco.")
         sys.exit(1)
 
-    # 5. Definir caminhos de saída
-    pasta_base_saida = os.path.join(project_root, "data", "output", "pansharpening", "multispectral-RGBN-bands")
-    pasta_tif = os.path.join(pasta_base_saida, "tif")
-    pasta_png = os.path.join(pasta_base_saida, "png")
+    # 5. Definir os diretórios de saída exatos
+    pasta_base_multibandas = os.path.join(project_root, "data", "output", "pansharpening", "multispectral-RGBN-bands")
+    pasta_saida_tif = os.path.join(pasta_base_multibandas, "tif")
+    pasta_saida_png = os.path.join(pasta_base_multibandas, "png")
 
     print(f"==================================================")
-    print(f" GERANDO 24 MULTIBANDAS: MUNICÍPIO {CODE_MUNI}")
+    print(f" INICIANDO GERAÇÃO MULTIESPECTRAL: MUNICÍPIO {CODE_MUNI}")
     print(f"==================================================")
 
-    # 6. Executar processamento
-    arquivos_gerados = gerar_composicoes(arquivo_recortado, pasta_tif, pasta_png, CODE_MUNI)
+    # 6. Executar o processamento
+    arquivos_finais = gerar_multibandas(caminho_alvo, pasta_saida_tif, pasta_saida_png)
 
-    # 7. Salvar relatório JSON com os resultados
+    # 7. Atualizar a pasta reports com o resultado deste script
     dados_finais = {
         "code_muni": CODE_MUNI,
-        "arquivo_origem_recortado": arquivo_recortado,
         "total_composicoes": 24,
-        "arquivos_gerados": arquivos_gerados
+        "pasta_tif": pasta_saida_tif,
+        "pasta_png": pasta_saida_png,
+        "arquivos_tif_gerados": arquivos_finais["tif"],
+        "arquivos_png_gerados": arquivos_finais["png"]
     }
     
     json_final = os.path.join(diretorio_reports, f"{CODE_MUNI}_multibands_results.json")
+    
     with open(json_final, 'w', encoding='utf-8') as f:
         json.dump(dados_finais, f, indent=4, ensure_ascii=False)
-
-    print(f"\n✅ Sucesso! Todas as imagens TIF e PNG foram geradas.")
-    print(f"[RELATÓRIO] JSON com mapeamento dos 48 arquivos gerado em:\n-> {json_final}")
+        
+    print(f"\n[RELATÓRIO] Processo concluído! Registro JSON atualizado em:\n-> {json_final}")
