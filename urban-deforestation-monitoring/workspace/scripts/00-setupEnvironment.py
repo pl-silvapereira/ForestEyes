@@ -1,26 +1,9 @@
 import os
 import subprocess
 import sys
-import ee
-
-# 1. Autentica interativamente (vai abrir o link para você logar com sua conta Google)
-ee.Authenticate()
-
-# 2. Inicializa o projeto
-ee.Initialize(project='foresteyes-regioes-urbanas')
-print("Autenticado e inicializado com sucesso!")
 
 # Define o diretório raiz do projeto
 os.environ['PROJECT_ROOT'] = '/content/drive/MyDrive/Mestrado/04-Projeto ForestEyes/ForestEyes/urban-deforestation-monitoring/workspace/' # Corrigido para a raiz do repositório
-
-# Configura o código do município e o ano
-os.environ['CODE_MUNI'] = '3549904'  # São José dos Campos
-os.environ['ANO'] = '2023'
-
-print("Variáveis de ambiente definidas:")
-print(f"  PROJECT_ROOT: {os.environ['PROJECT_ROOT']}")
-print(f"  CODE_MUNI: {os.environ['CODE_MUNI']}")
-print(f"  ANO: {os.environ['ANO']}")
 
 # Define o caminho para o arquivo requirements.txt
 requirements_path = os.path.join(os.environ['PROJECT_ROOT'], 'requirements.txt') # Usa PROJECT_ROOT corrigido
