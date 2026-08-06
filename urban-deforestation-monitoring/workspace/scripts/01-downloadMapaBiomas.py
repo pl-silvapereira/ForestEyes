@@ -6,6 +6,7 @@ import geobr
 import json
 import os
 import unicodedata
+import google.auth
 from dotenv import load_dotenv
 
 if len(sys.argv) < 3:
@@ -28,9 +29,12 @@ os.makedirs(diretorio_data_input, exist_ok=True)
 os.makedirs(diretorio_reports, exist_ok=True)
 
 try:
-    print("Autenticando no Google Earth Engine...")
-    ee.Authenticate()
-    ee.Initialize(project='foresteyes-regioes-urbanas')
+    print("Inicializando Google Earth Engine via credenciais da máquina...")
+    credentials, _ = google.auth.default(
+        scopes=['https://www.googleapis.com/auth/earthengine', 
+                'https://www.googleapis.com/auth/cloud-platform']
+    )
+    ee.Initialize(credentials, project='foresteyes-regioes-urbanas')
     print("Earth Engine inicializado com sucesso.")
 
     print(f"Buscando informações para o código de município: {CODE_MUNI}...")
