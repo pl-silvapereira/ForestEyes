@@ -6,7 +6,6 @@ import geobr
 import json
 import os
 import unicodedata
-import google.auth
 from dotenv import load_dotenv
 
 if len(sys.argv) < 3:
@@ -19,6 +18,9 @@ ANO = int(sys.argv[2])
 load_dotenv()
 project_root = os.getenv("PROJECT_ROOT")
 
+if not project_root:
+    raise ValueError("A variável PROJECT_ROOT não foi encontrada no arquivo .env.")
+
 diretorio_data_input = os.path.join(project_root, "data", "input", "MapBiomas", str(ANO))
 diretorio_reports = os.path.join(project_root, "reports")
 
@@ -26,13 +28,10 @@ os.makedirs(diretorio_data_input, exist_ok=True)
 os.makedirs(diretorio_reports, exist_ok=True)
 
 try:
-    # Inicialização blindada para aceitar credenciais ADC em subprocessos do Colab
-    credentials, _ = google.auth.default(
-        scopes=['https://www.googleapis.com/auth/earthengine', 
-                'https://www.googleapis.com/auth/cloud-platform']
-    )
-    ee.Initialize(credentials, project='foresteyes-regioes-urbanas')
-    print("Earth Engine inicializado com sucesso via credenciais ADC.")
+    print("Autenticando no Google Earth Engine...")
+    ee.Authenticate()
+    ee.Initialize(project='foresteyes-regioes-urbanas')
+    print("Earth Engine inicializado com sucesso.")
 
     print(f"Buscando informações para o código de município: {CODE_MUNI}...")
     gdf_muni = geobr.read_municipality(code_muni=CODE_MUNI, year=2022)
