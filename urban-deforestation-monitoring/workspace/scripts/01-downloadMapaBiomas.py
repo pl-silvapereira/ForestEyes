@@ -76,7 +76,7 @@ try:
     print(f"[RELATÓRIO] Arquivo JSON gerado em:\n-> {caminho_json}\n")
 
     BANDA_ANO = f'classification_{ANO}'
-    asset_mapbiomas_10m = 'projects/mapbiomas-public/assets/brazil/lulc_10m/collection2/mapbiomas_10m_collection2_integration_v1'
+    asset_mapbiomas_10m = 'projects/mapbiomas-public/assets/brazil/lulc_10m/collection3/mapbiomas_10m_collection3_integration_v1'
     mapbiomas_10m = ee.Image(asset_mapbiomas_10m).select(BANDA_ANO)
     imagem_recortada = mapbiomas_10m.clip(limite_geopolitico).unmask(0).short()
 
