@@ -19,46 +19,13 @@ def registar_categoria(ids, name, color, iso120, iso122, iso123):
             'iso_37123': iso123
         }
 
-# 1. FLORESTAS
-registar_categoria([3], 'Floresta', '#006400', 
-    'Area verde (ha) por 100.000 hab. e indices de qualidade do ar.', 
-    'Monitorizacao IoT de desmatamento e saude vegetal.', 
-    'Mitigacao de Ilhas de Calor Urbanas (UHI).')
-
-registar_categoria([9], 'Floresta Antrópica', '#93c47d', 
-    'Area verde (ha) por 100.000 hab. e indices de qualidade do ar.', 
-    'Monitorizacao IoT de desmatamento e saude vegetal.', 
-    'Mitigacao de Ilhas de Calor Urbanas (UHI).')
-
-# 2. VEGETAÇÃO HERBÁCEA E ARBUSTIVA
-registar_categoria([11, 12, 36], 'Vegetacao Herbacea e Arbustiva', '#a8c04d', 
-    'Manutencao da biodiversidade local e % de areas nao pavimentadas.', 
-    'Monitorizacao preditiva de risco de queimadas.', 
-    'Areas de amortecimento (Buffer Zones) e permeabilidade do solo.')
-
-# 3. AGROPECUÁRIA E LAVOURAS
-registar_categoria([15, 19, 20, 21, 39, 41, 46, 48], 'Agropecuaria (Campos, Lavouras)', '#edde8e', 
-    'Protecao de terras araveis contra o espraiamento urbano (Urban Sprawl).', 
-    'Agrotech, agricultura de precisao e rastreabilidade local.', 
-    'Garantia de seguranca alimentar e autoabastecimento.')
-
-# 4. INFRAESTRUTURA URBANA
-registar_categoria([24, 25], 'Infraestrutura Urbana', '#d4271e', 
-    'Densidade populacional, acesso a moradia e crescimento da mancha urbana.', 
-    'Infraestrutura conectada (Smart Grids) e mobilidade inteligente.', 
-    'Vulnerabilidade da infraestrutura critica frente a desastres.')
-
-# 5. CORPOS HÍDRICOS (ÁGUA/ROCHA)
-registar_categoria([29, 31, 33], 'Nao Observado (Agua, Rocha)', '#0000ff', 
-    'Disponibilidade, acesso e qualidade das reservas hidricas superficiais.', 
-    'Telemetria e sensores para controlo de qualidade e nivel.', 
-    'Prevencao de inundacoes e respeito as Areas de Preservacao Permanente (APP).')
-
-# 6. DESCARTADAS (RUÍDO)
-registar_categoria([4, 5, 6, 23, 27, 30, 32, 35, 40, 47, 49, 50, 62, 75], 'Descartadas', '#A9A9A9', 
-    'N/A - Filtragem de dados para precisao dos calculos.', 
-    'N/A - Otimizacao de processamento analitico.', 
-    'N/A - Remocao de anomalias da modelagem de risco.')
+registar_categoria([3], 'Floresta', '#006400', 'Area verde (ha) por 100.000 hab.', 'Monitorizacao IoT', 'Mitigacao de Ilhas de Calor.')
+registar_categoria([9], 'Floresta Antrópica', '#93c47d', 'Area verde (ha) por 100.000 hab.', 'Monitorizacao IoT', 'Mitigacao de Ilhas de Calor.')
+registar_categoria([11, 12, 36], 'Vegetacao Herbacea e Arbustiva', '#a8c04d', 'Biodiversidade local', 'Risco de queimadas', 'Buffer Zones.')
+registar_categoria([15, 19, 20, 21, 39, 41, 46, 48], 'Agropecuaria (Campos, Lavouras)', '#edde8e', 'Protecao de terras', 'Agrotech', 'Seguranca alimentar.')
+registar_categoria([24, 25], 'Infraestrutura Urbana', '#d4271e', 'Densidade populacional', 'Smart Grids', 'Vulnerabilidade a desastres.')
+registar_categoria([29, 31, 33], 'Nao Observado (Agua, Rocha)', '#0000ff', 'Disponibilidade hidrica', 'Telemetria', 'Prevencao de inundacoes.')
+registar_categoria([4, 5, 6, 23, 27, 30, 32, 35, 40, 47, 49, 50, 62, 75], 'Descartadas', '#A9A9A9', 'N/A', 'N/A', 'N/A')
 
 def gerar_estilo_qml_automatico(caminho_qml, metadata):
     categorias, simbolos = "", ""
@@ -89,14 +56,21 @@ def gerar_estilo_qml_automatico(caminho_qml, metadata):
         f.write(conteudo_qml)
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        sys.exit(1)
-
-    CODE_MUNI = int(sys.argv[1])
-    ANO = sys.argv[2]
-
     load_dotenv()
     project_root = os.getenv("PROJECT_ROOT")
+    if not project_root:
+        raise ValueError("A variável PROJECT_ROOT não foi encontrada.")
+
+    if len(sys.argv) >= 3:
+        CODE_MUNI = int(sys.argv[1])
+        ANO = str(sys.argv[2])
+    else:
+        CODE_MUNI = int(os.environ.get('CODE_MUNI', 0))
+        ANO = str(os.environ.get('ANO', ''))
+
+    if not CODE_MUNI or not ANO:
+        sys.exit(1)
+
     diretorio_reports = os.path.join(project_root, "reports")
     json_mapbiomas = os.path.join(diretorio_reports, f"{CODE_MUNI}_{ANO}.json")
 
@@ -107,6 +81,7 @@ if __name__ == "__main__":
 
     pasta_saida = os.path.join(project_root, "data", "output", "classification", ANO)
     os.makedirs(pasta_saida, exist_ok=True)
+    os.makedirs(diretorio_reports, exist_ok=True)
     
     prefixo = f'{CODE_MUNI}_Classificado_ForestEyes_{ANO}'
     caminho_shp = os.path.join(pasta_saida, f"{prefixo}.shp")
