@@ -58,7 +58,7 @@ def main():
             print(f"⚠️ [AVISO] Shapefile não encontrado para o ano {ano_comp}. Pulando este período.")
             continue
 
-        print(f"Processando comparativo real: {ano_base} vs {ano_comp}...")
+        print(f"Processando comparativo rigoroso: {ano_base} vs {ano_comp}...")
         df_comp = gpd.read_file(path_shp_comp).to_crs(utm_crs)
         df_comp['area_ha'] = df_comp.geometry.area / 10000.0
         totais_comp = df_comp.groupby('class_name')['area_ha'].sum()
@@ -66,14 +66,14 @@ def main():
         todas_categorias = sorted(list(set(totais_base.index).union(set(totais_comp.index))))
         dif_dict = {cat: totais_comp.get(cat, 0.0) - totais_base.get(cat, 0.0) for cat in todas_categorias}
 
-        # Cruzamento espacial real (Overlay) para pegar o destino exato da perda de cada classe
+        # Cruzamento espacial real (Overlay)
         df1_sub = df_base[['class_name', 'geometry']].rename(columns={'class_name': 'cat_ano1'})
         df2_sub = df_comp[['class_name', 'geometry']].rename(columns={'class_name': 'cat_ano2'})
         overlap = gpd.overlay(df1_sub, df2_sub, how='intersection', keep_geom_type=True)
         overlap['area_ha'] = overlap.geometry.area / 10000.0
 
-        # Agrupar transições reais por categoria de origem e destino
-        transicoes = overlap.groupby(['cat_ano1', 'cat_ano2'])['area_ha'].sum().reset_index()
+        # Filtrar apenas o que mudou de classe (excluir a diagonal onde origem == destino)
+        mudancas = overlap[overlap['cat_ano1'] != overlap['cat_ano2']]
 
         y_true = overlap['cat_ano1']
         y_pred = overlap['cat_ano2']
@@ -95,10 +95,13 @@ def main():
             val_2 = totais_comp.get(cat, 0.0)
             dif = dif_dict[cat]
 
-            # Filtrar apenas transições onde a categoria mudou (destino diferente da origem) e houve perda líquida (dif < 0)
+            # Se houve perda líquida (dif < 0), pegamos exatamente para quais classes essa categoria específica transferiu área
             if dif < 0:
-                df_perdas_cat = transicoes[(transicoes['cat_ano1'] == cat) & (transicoes['cat_ano2'] != cat) & (transicoes['area_ha'] > 0.01)]
-                destinos_list = list(zip(df_perdas_cat['cat_ano2'], df_perdas_cat['area_ha'])) if not df_perdas_cat.empty else []
+                trans_perda = mudancas[mudancas['cat_ano1'] == cat]
+                agrupado_destino = trans_perda.groupby('cat_ano2')['area_ha'].sum().reset_index()
+                # Filtrar apenas destinos expressivos (> 0.01 ha)
+                agrupado_destino = agrupado_destino[agrupado_destino['area_ha'] > 0.01]
+                destinos_list = list(zip(agrupado_destino['cat_ano2'], agrupado_destino['area_ha']))
             else:
                 destinos_list = []
 
@@ -125,13 +128,13 @@ def main():
         relatorio_geral_linhas.append(f" • Coeficiente Kappa (Kappa Index): {kappa_idx:.4f}")
         relatorio_geral_linhas.append("=" * 60 + "\n\n")
 
-    relatorio_nome = f"{code_muni}_change_report_multi_corrected_{ano_base}_ate_{anos_comparacao[-1]}.txt"
+    relatorio_nome = f"{code_muni}_change_report_multi_exact_{ano_base}_ate_{anos_comparacao[-1]}.txt"
     relatorio_path = os.path.join(reports_dir, relatorio_nome)
 
     with open(relatorio_path, 'w', encoding='utf-8') as f:
         f.write("\n".join(relatorio_geral_linhas))
 
-    print(f"\n[SUCESSO] Relatório corrigido gerado em:\n-> {relatorio_path}\n")
+    print(f"\n[SUCESSO] Relatório com consistência exata gerado em:\n-> {relatorio_path}\n")
 
 if __name__ == "__main__":
     main()
