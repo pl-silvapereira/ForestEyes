@@ -6,6 +6,7 @@ import geobr
 import json
 import os
 import unicodedata
+import google.auth
 from dotenv import load_dotenv
 
 if len(sys.argv) < 3:
@@ -25,7 +26,13 @@ os.makedirs(diretorio_data_input, exist_ok=True)
 os.makedirs(diretorio_reports, exist_ok=True)
 
 try:
-    print("Earth Engine inicializado com sucesso.")
+    # Inicialização blindada para aceitar credenciais ADC em subprocessos do Colab
+    credentials, _ = google.auth.default(
+        scopes=['https://www.googleapis.com/auth/earthengine', 
+                'https://www.googleapis.com/auth/cloud-platform']
+    )
+    ee.Initialize(credentials, project='foresteyes-regioes-urbanas')
+    print("Earth Engine inicializado com sucesso via credenciais ADC.")
 
     print(f"Buscando informações para o código de município: {CODE_MUNI}...")
     gdf_muni = geobr.read_municipality(code_muni=CODE_MUNI, year=2022)
@@ -68,7 +75,6 @@ try:
         "arquivo_mapbiomas": caminho_mapbiomas_local
     }
     
-    # ATENÇÃO: Salvando com o ano no nome do arquivo JSON
     caminho_json = os.path.join(diretorio_reports, f"{CODE_MUNI}_{ANO}.json")
     with open(caminho_json, 'w', encoding='utf-8') as f_json:
         json.dump(dados_json, f_json, indent=4, ensure_ascii=False)
