@@ -75,12 +75,16 @@ def main():
 
     # 6. Montar o relatório em texto estruturado
     linhas_relatorio = []
-    linhas_relatorio.append("=" * 105)
+    linhas_relatorio.append("=" * 115)
     linhas_relatorio.append(f" RELATÓRIO DE ANÁLISE DE MUDANÇA TEMPORAL DE USO DO SOLO")
     linhas_relatorio.append(f" MUNICÍPIO: {code_muni} | PERÍODO ANALISADO: {ano_1} vs {ano_2}")
-    linhas_relatorio.append("=" * 105)
-    linhas_relatorio.append(f"{'CATEGORIA':<35} | {ano_1} (ha):<10} | {ano_2} (ha):<10} | DIFERENÇA | DESTINO DA MUDANÇA (NOVA CATEGORIA) | ÁREA (ha)")
-    linhas_relatorio.append("-" * 105)
+    linhas_relatorio.append("=" * 115)
+    
+    # Cabeçalho corrigido com formatação segura dentro das chaves
+    col_ano1 = f"{ano_1} (ha)"
+    col_ano2 = f"{ano_2} (ha)"
+    linhas_relatorio.append(f"{'CATEGORIA':<35} | {col_ano1:<12} | {col_ano2:<12} | DIFERENÇA | DESTINO DA MUDANÇA (NOVA CATEGORIA) | ÁREA (ha)")
+    linhas_relatorio.append("-" * 115)
 
     for cat in todas_categorias:
         val_1 = totais_1.get(cat, 0.0)
@@ -91,21 +95,21 @@ def main():
 
         primeira_linha = True
         if trans_cat.empty:
-            linha = f"{cat:<35} | {val_1:>10.2f} | {val_2:>10.2f} | {dif:>+9.2f} | {'Nenhuma alteração / Mantido':<35} | {'-':>10}"
+            linha = f"{cat:<35} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+9.2f} | {'Nenhuma alteração / Mantido':<35} | {'-':>10}"
             linhas_relatorio.append(linha)
         else:
             for _, row in trans_cat.iterrows():
                 destino = row['cat_ano2']
                 qte_area = row['area_ha']
                 if primeira_linha:
-                    linha = f"{cat:<35} | {val_1:>10.2f} | {val_2:>10.2f} | {dif:>+9.2f} | {destino:<35} | {qte_area:>10.2f}"
+                    linha = f"{cat:<35} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+9.2f} | {destino:<35} | {qte_area:>10.2f}"
                     linhas_relatorio.append(linha)
                     primeira_linha = False
                 else:
-                    linha = f"{'':<35} | {'':>10} | {'':>10} | {'':>9} | {destino:<35} | {qte_area:>10.2f}"
+                    linha = f"{'':<35} | {'':>12} | {'':>12} | {'':>9} | {destino:<35} | {qte_area:>10.2f}"
                     linhas_relatorio.append(linha)
 
-    linhas_relatorio.append("=" * 105)
+    linhas_relatorio.append("=" * 115)
 
     # 7. Salvar o arquivo de relatório em .txt na pasta reports
     relatorio_nome = f"{code_muni}_change_report_{ano_1}_vs_{ano_2}.txt"
