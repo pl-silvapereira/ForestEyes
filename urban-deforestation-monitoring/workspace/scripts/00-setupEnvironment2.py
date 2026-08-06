@@ -4,7 +4,7 @@ import sys
 import ee
 
 # 1. Autentica interativamente (vai abrir o link para você logar com sua conta Google)
-ee.Authenticate()
+# ee.Authenticate()
 
 # 2. Inicializa o projeto
 ee.Initialize(project='foresteyes-regioes-urbanas')
