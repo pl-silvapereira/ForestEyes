@@ -1,11 +1,9 @@
 import os
 import sys
 import subprocess
-from dotenv import load_dotenv
 
 def main():
     # 1. Validar se o município e o ano foram passados por argumento
-    # Uso correto: python 06-ProcessamentoDeDadosParaAnalise.py <code_muni> <ano>
     if len(sys.argv) < 3:
         print("❌ Erro: Parâmetros insuficientes.")
         print("Uso correto: python 06-ProcessamentoDeDadosParaAnalise.py <code_muni> <ano>")
@@ -15,14 +13,13 @@ def main():
     code_muni = sys.argv[1]
     ano = sys.argv[2]
 
-    # 2. Carregar variáveis de ambiente
-    load_dotenv()
-    project_root = os.getenv('PROJECT_ROOT')
+    # 2. AUTO-DESCOBERTA DO PROJECT_ROOT (Bypass Seguro)
+    # Descobre o caminho dinamicamente baseado na localização física deste arquivo.
+    # Como o script está em ".../workspace/scripts/", ele sempre achará o "/workspace" correto.
+    diretorio_scripts = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(diretorio_scripts) 
 
-    if not project_root:
-        raise ValueError("A variável PROJECT_ROOT não foi encontrada no arquivo .env.")
-
-    # 3. Criação automática de todos os diretórios e subpastas no Google Drive se não existirem
+    # 3. Criação automática de todos os diretórios e subpastas no Google Drive
     reports_dir = os.path.join(project_root, "reports")
     data_input_mapbiomas = os.path.join(project_root, "data", "input", "MapBiomas", str(ano))
     data_input_cbers = os.path.join(project_root, "data", "input", "CBERS-4A-WPM", str(ano))
@@ -41,17 +38,15 @@ def main():
         classification_dir
     ]
 
-    print("Verificando e criando diretórios de trabalho automaticamente...")
-    for diretorio in diretorios_necessarios:
-        os.makedirs(diretorio, exist_ok=True)
-
     print("=" * 70)
     print(f"🚀 INICIANDO ORQUESTRAÇÃO DE DADOS URBANOS")
     print(f"📍 MUNICÍPIO: {code_muni} | 📅 ANO DE ANÁLISE: {ano}")
+    print(f"📁 WORKSPACE: {project_root}")
     print("=" * 70)
 
-    # 4. Localizar o diretório onde os scripts estão salvos (mesma pasta do script 06)
-    diretorio_scripts = os.path.dirname(os.path.abspath(__file__))
+    print("Verificando e criando diretórios de trabalho automaticamente...")
+    for diretorio in diretorios_necessarios:
+        os.makedirs(diretorio, exist_ok=True)
 
     # Lista dos 5 scripts na ordem correta de execução
     scripts = [
@@ -62,9 +57,10 @@ def main():
         "05-gerarClassificacaoMapBiomas.py"
     ]
 
-    # Injetar o ano nas variáveis de ambiente locais para os scripts filhos
+    # 4. Injetar o ano e o ROOT exato no ambiente virtual da execução
     env = os.environ.copy()
     env['ANO'] = str(ano)
+    env['PROJECT_ROOT'] = project_root # <--- Força os scripts 01 a 05 a usarem a pasta correta
 
     # 5. Execução sequencial robusta
     for script in scripts:
@@ -79,6 +75,7 @@ def main():
         # Passa explicitamente o code_muni e o ano como argumentos para cada script
         comando = [sys.executable, caminho_script, str(code_muni), str(ano)]
         
+        # O parâmetro env repassa o PROJECT_ROOT forçado para os subprocessos
         resultado = subprocess.run(comando, env=env)
 
         if resultado.returncode != 0:
