@@ -2,6 +2,7 @@ import os
 import sys
 import geopandas as gpd
 import pandas as pd
+import geobr
 from dotenv import load_dotenv
 
 def main():
@@ -25,6 +26,17 @@ def main():
     reports_dir = os.path.join(project_root, "reports")
     os.makedirs(reports_dir, exist_ok=True)
 
+    # Buscar nome da cidade via geobr usando o código do IBGE
+    print(f"Buscando informações para o código de município: {code_muni}...")
+    try:
+        gdf_info = geobr.read_municipality(code_muni=code_muni, year=2022)
+        nome_cidade = gdf_info['name_muni'].values[0]
+        uf = gdf_info['abbrev_state'].values[0]
+    except Exception as e:
+        nome_cidade = "Município Desconhecido"
+        uf = "XX"
+        print(f"⚠️ Aviso ao buscar nome da cidade: {e}")
+
     path_shp_1 = os.path.join(project_root, "data", "output", "classification", ano_1, f"{code_muni}_Classificado_ForestEyes_{ano_1}.shp")
     path_shp_2 = os.path.join(project_root, "data", "output", "classification", ano_2, f"{code_muni}_Classificado_ForestEyes_{ano_2}.shp")
 
@@ -36,7 +48,7 @@ def main():
 
     print("=" * 125)
     print(f"📊 GERANDO RELATÓRIO DE PERDAS LÍQUIDAS E DESTINOS DE USO DO SOLO")
-    print(f"📍 MUNICÍPIO: {code_muni} | PERÍODO: {ano_1} vs {ano_2}")
+    print(f"📍 MUNICÍPIO: {nome_cidade} - {uf} (IBGE: {code_muni}) | PERÍODO: {ano_1} vs {ano_2}")
     print("=" * 125)
 
     df1 = gpd.read_file(path_shp_1)
@@ -64,7 +76,7 @@ def main():
     linhas_relatorio = []
     linhas_relatorio.append("=" * 125)
     linhas_relatorio.append(f" RELATÓRIO DE PERDAS LÍQUIDAS E DESTINOS DE USO DO SOLO")
-    linhas_relatorio.append(f" MUNICÍPIO: {code_muni} | PERÍODO: {ano_1} vs {ano_2}")
+    linhas_relatorio.append(f" MUNICÍPIO: {nome_cidade} - {uf} (IBGE: {code_muni}) | PERÍODO: {ano_1} vs {ano_2}")
     linhas_relatorio.append("=" * 125)
     
     header = f"{'CATEGORIA':<32} | {ano_1 + ' (ha)':<12} | {ano_2 + ' (ha)':<12} | {'DIFERENÇA':<10} | {'NOVA CATEGORIA (Destino)':<32} | {'ÁREA (ha)':<10}"
@@ -76,7 +88,6 @@ def main():
         val_2 = totais_2.get(cat, 0.0)
         dif = dif_dict[cat]
 
-        # Se a categoria perdeu área (dif < 0), detalhar os destinos com base nas classes que ganharam
         if dif < 0 and categorias_ganho:
             destinos_list = list(categorias_ganho.items())
         else:
@@ -106,7 +117,7 @@ def main():
     with open(relatorio_path, 'w', encoding='utf-8') as f:
         f.write("\n".join(linhas_relatorio))
 
-    print(f"\n[SUCESSO] Relatório de perdas ajustado gerado em:\n-> {relatorio_path}\n")
+    print(f"\n[SUCESSO] Relatório gerado com sucesso em:\n-> {relatorio_path}\n")
 
 if __name__ == "__main__":
     main()
