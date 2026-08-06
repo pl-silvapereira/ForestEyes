@@ -50,7 +50,7 @@ def main():
 
     # Lista dos 5 scripts na ordem correta de execução
     scripts = [
-        "01-downloadMapaBiomas.py",
+        "01-downloadMapaBiomas2.py",
         "02-downloadProcessarCBERS.py",
         "03-recortarCBERS.py",
         "04-gerarMultibandas.py",
