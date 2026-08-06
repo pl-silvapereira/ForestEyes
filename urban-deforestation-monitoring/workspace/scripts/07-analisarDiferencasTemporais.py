@@ -34,10 +34,10 @@ def main():
         print(f" -> [{ano_2}]: {path_shp_2}")
         sys.exit(1)
 
-    print("=" * 115)
-    print(f"📊 GERANDO RELATÓRIO DE PERDAS DE USO DO SOLO")
+    print("=" * 125)
+    print(f"📊 GERANDO RELATÓRIO DE PERDAS LÍQUIDAS E DESTINOS DE USO DO SOLO")
     print(f"📍 MUNICÍPIO: {code_muni} | PERÍODO: {ano_1} vs {ano_2}")
-    print("=" * 115)
+    print("=" * 125)
 
     df1 = gpd.read_file(path_shp_1)
     df2 = gpd.read_file(path_shp_2)
@@ -55,14 +55,11 @@ def main():
 
     todas_categorias = sorted(list(set(totais_1.index).union(set(totais_2.index))))
 
-    print("Executando cruzamento espacial (Overlay) para matriz de transição...")
-    df1_sub = df1[['class_name', 'geometry']].rename(columns={'class_name': 'cat_ano1'})
-    df2_sub = df2[['class_name', 'geometry']].rename(columns={'class_name': 'cat_ano2'})
+    # Calcular diferenças para cada categoria
+    dif_dict = {cat: totais_2.get(cat, 0.0) - totais_1.get(cat, 0.0) for cat in todas_categorias}
 
-    overlap = gpd.overlay(df1_sub, df2_sub, how='intersection', keep_geom_type=True)
-    overlap['area_ha'] = overlap.geometry.area / 10000.0
-
-    transicoes = overlap.groupby(['cat_ano1', 'cat_ano2'])['area_ha'].sum().reset_index()
+    # Identificar categorias que ganharam área (dif > 0) para usar como destino das perdas
+    categorias_ganho = {cat: d for cat, d in dif_dict.items() if d > 0}
 
     linhas_relatorio = []
     linhas_relatorio.append("=" * 125)
@@ -77,26 +74,26 @@ def main():
     for cat in todas_categorias:
         val_1 = totais_1.get(cat, 0.0)
         val_2 = totais_2.get(cat, 0.0)
-        dif = val_2 - val_1
+        dif = dif_dict[cat]
 
-        # Preenche destinos apenas se a diferença for menor que zero (houve perda líquida)
-        if dif < 0:
-            df_perdas = transicoes[(transicoes['cat_ano1'] == cat) & (transicoes['cat_ano2'] != cat) & (transicoes['area_ha'] > 0.01)]
-            perdas_list = list(zip(df_perdas['cat_ano2'], df_perdas['area_ha'])) if not df_perdas.empty else []
+        # Se a categoria perdeu área (dif < 0), detalhar os destinos com base nas classes que ganharam
+        if dif < 0 and categorias_ganho:
+            destinos_list = list(categorias_ganho.items())
         else:
-            perdas_list = []
+            destinos_list = []
 
-        if not perdas_list:
+        if not destinos_list:
             linha = f"{cat:<32} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+10.2f} | {'-':<32} | {'-':>10}"
             linhas_relatorio.append(linha)
         else:
             primeira_linha = True
-            for dest, area_dest in perdas_list:
+            for dest_cat, dest_dif in destinos_list:
+                str_area = f"{dest_dif:>+10.2f}"
                 if primeira_linha:
-                    linha = f"{cat:<32} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+10.2f} | {dest:<32} | {area_dest:>10.2f}"
+                    linha = f"{cat:<32} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+10.2f} | {dest_cat:<32} | {str_area}"
                     primeira_linha = False
                 else:
-                    linha = f"{'':<32} | {'':<12} | {'':<12} | {'':<10} | {dest:<32} | {area_dest:>10.2f}"
+                    linha = f"{'':<32} | {'':<12} | {'':<12} | {'':<10} | {dest_cat:<32} | {str_area}"
                 linhas_relatorio.append(linha)
 
         linhas_relatorio.append("-" * 125)
@@ -109,7 +106,7 @@ def main():
     with open(relatorio_path, 'w', encoding='utf-8') as f:
         f.write("\n".join(linhas_relatorio))
 
-    print(f"\n[SUCESSO] Relatório de perdas gerado em:\n-> {relatorio_path}\n")
+    print(f"\n[SUCESSO] Relatório de perdas ajustado gerado em:\n-> {relatorio_path}\n")
 
 if __name__ == "__main__":
     main()
