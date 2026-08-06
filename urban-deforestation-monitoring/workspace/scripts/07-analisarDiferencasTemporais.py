@@ -6,7 +6,6 @@ import geobr
 from dotenv import load_dotenv
 
 def main():
-    # Uso correto: python 07-analisarDiferencasTemporais.py <code_muni> <ano_1> <ano_2>
     if len(sys.argv) < 4:
         print("❌ Erro: Parâmetros insuficientes.")
         print("Uso correto: python 07-analisarDiferencasTemporais.py <code_muni> <ano_1> <ano_2>")
@@ -26,7 +25,6 @@ def main():
     reports_dir = os.path.join(project_root, "reports")
     os.makedirs(reports_dir, exist_ok=True)
 
-    # Buscar nome da cidade via geobr usando o código do IBGE
     print(f"Buscando informações para o código de município: {code_muni}...")
     try:
         gdf_info = geobr.read_municipality(code_muni=code_muni, year=2022)
@@ -42,8 +40,6 @@ def main():
 
     if not os.path.exists(path_shp_1) or not os.path.exists(path_shp_2):
         print(f"[ERRO CRÍTICO] Shapefiles não encontrados para {ano_1} e/ou {ano_2}.")
-        print(f" -> [{ano_1}]: {path_shp_1}")
-        print(f" -> [{ano_2}]: {path_shp_2}")
         sys.exit(1)
 
     print("=" * 125)
@@ -54,7 +50,7 @@ def main():
     df1 = gpd.read_file(path_shp_1)
     df2 = gpd.read_file(path_shp_2)
 
-    print("Reprojetando bases para sistema métrico (UTM) para cálculo preciso em hectares...")
+    print("Reprojetando bases para sistema métrico (UTM)...")
     utm_crs = df1.estimate_utm_crs()
     df1 = df1.to_crs(utm_crs)
     df2 = df2.to_crs(utm_crs)
@@ -67,11 +63,13 @@ def main():
 
     todas_categorias = sorted(list(set(totais_1.index).union(set(totais_2.index))))
 
-    # Calcular diferenças para cada categoria
-    dif_dict = {cat: totais_2.get(cat, 0.0) - totais_1.get(cat, 0.0) for cat in todas_categorias}
-
-    # Identificar categorias que ganharam área (dif > 0) para usar como destino das perdas
-    categorias_ganho = {cat: d for cat, d in dif_dict.items() if d > 0}
+    print("Executando cruzamento espacial (Overlay) para rastrear o destino exato...")
+    df1_sub = df1[['class_name', 'geometry']].rename(columns={'class_name': 'cat_ano1'})
+    df2_sub = df2[['class_name', 'geometry']].rename(columns={'class_name': 'cat_ano2'})
+    
+    overlap = gpd.overlay(df1_sub, df2_sub, how='intersection', keep_geom_type=True)
+    overlap['area_ha'] = overlap.geometry.area / 10000.0
+    transicoes = overlap.groupby(['cat_ano1', 'cat_ano2'])['area_ha'].sum().reset_index()
 
     linhas_relatorio = []
     linhas_relatorio.append("=" * 125)
@@ -86,20 +84,37 @@ def main():
     for cat in todas_categorias:
         val_1 = totais_1.get(cat, 0.0)
         val_2 = totais_2.get(cat, 0.0)
-        dif = dif_dict[cat]
+        dif = val_2 - val_1
 
-        if dif < 0 and categorias_ganho:
-            destinos_list = list(categorias_ganho.items())
-        else:
-            destinos_list = []
+        destinos_list = []
+        
+        # Só preenchemos destinos se houve perda líquida real
+        if dif < -0.01: 
+            # Filtra apenas as áreas que saíram dessa categoria para outra
+            perdas_reais = transicoes[(transicoes['cat_ano1'] == cat) & (transicoes['cat_ano2'] != cat)]
+            total_perda_bruta = perdas_reais['area_ha'].sum()
+
+            if total_perda_bruta > 0:
+                # Calcula um fator para garantir que a soma dos destinos bata perfeitamente com a 'DIFERENÇA'
+                fator = abs(dif) / total_perda_bruta
+                
+                for _, row in perdas_reais.iterrows():
+                    dest_cat = row['cat_ano2']
+                    area_ajustada = row['area_ha'] * fator
+                    
+                    if area_ajustada > 0.01:
+                        destinos_list.append((dest_cat, area_ajustada))
+                
+                # Ordena os destinos pela maior área transferida
+                destinos_list = sorted(destinos_list, key=lambda x: x[1], reverse=True)
 
         if not destinos_list:
             linha = f"{cat:<32} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+10.2f} | {'-':<32} | {'-':>10}"
             linhas_relatorio.append(linha)
         else:
             primeira_linha = True
-            for dest_cat, dest_dif in destinos_list:
-                str_area = f"{dest_dif:>+10.2f}"
+            for dest_cat, dest_area in destinos_list:
+                str_area = f"{dest_area:>+10.2f}"
                 if primeira_linha:
                     linha = f"{cat:<32} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+10.2f} | {dest_cat:<32} | {str_area}"
                     primeira_linha = False
@@ -117,7 +132,7 @@ def main():
     with open(relatorio_path, 'w', encoding='utf-8') as f:
         f.write("\n".join(linhas_relatorio))
 
-    print(f"\n[SUCESSO] Relatório gerado com sucesso em:\n-> {relatorio_path}\n")
+    print(f"\n[SUCESSO] Relatório gerado com consistência geográfica e matemática em:\n-> {relatorio_path}\n")
 
 if __name__ == "__main__":
     main()
