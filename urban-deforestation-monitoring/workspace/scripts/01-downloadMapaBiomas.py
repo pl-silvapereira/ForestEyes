@@ -25,8 +25,6 @@ os.makedirs(diretorio_data_input, exist_ok=True)
 os.makedirs(diretorio_reports, exist_ok=True)
 
 try:
-    # A autenticação interativa foi removida daqui, pois já é feita no script 00.
-    ee.Initialize(project='foresteyes-regioes-urbanas')
     print("Earth Engine inicializado com sucesso.")
 
     print(f"Buscando informações para o código de município: {CODE_MUNI}...")
