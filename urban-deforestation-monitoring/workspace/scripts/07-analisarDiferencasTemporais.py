@@ -2,7 +2,9 @@ import os
 import sys
 import geopandas as gpd
 import pandas as pd
+import numpy as np
 import geobr
+from sklearn.metrics import confusion_matrix, cohen_kappa_score, accuracy_score
 from dotenv import load_dotenv
 
 def main():
@@ -47,7 +49,7 @@ def main():
         sys.exit(1)
 
     print("=" * 125)
-    print(f"📊 GERANDO RELATÓRIO DE PERDAS LÍQUIDAS E DESTINOS DE USO DO SOLO")
+    print(f"📊 GERANDO RELATÓRIO DE PERDAS, DESTINOS E VALIDAÇÃO ESTATÍSTICA (KAPPA)")
     print(f"📍 MUNICÍPIO: {nome_cidade} - {uf} (IBGE: {code_muni}) | PERÍODO: {ano_1} vs {ano_2}")
     print("=" * 125)
 
@@ -66,17 +68,35 @@ def main():
     totais_2 = df2.groupby('class_name')['area_ha'].sum()
 
     todas_categorias = sorted(list(set(totais_1.index).union(set(totais_2.index))))
-
-    # Calcular diferenças para cada categoria
     dif_dict = {cat: totais_2.get(cat, 0.0) - totais_1.get(cat, 0.0) for cat in todas_categorias}
-
-    # Identificar categorias que ganharam área (dif > 0) para usar como destino das perdas
     categorias_ganho = {cat: d for cat, d in dif_dict.items() if d > 0}
 
+    print("Executando cruzamento espacial para matriz de transição e cálculo estatístico...")
+    df1_sub = df1[['class_name', 'geometry']].rename(columns={'class_name': 'cat_ano1'})
+    df2_sub = df2[['class_name', 'geometry']].rename(columns={'class_name': 'cat_ano2'})
+
+    overlap = gpd.overlay(df1_sub, df2_sub, how='intersection', keep_geom_type=True)
+    overlap['area_ha'] = overlap.geometry.area / 10000.0
+
+    transicoes = overlap.groupby(['cat_ano1', 'cat_ano2'])['area_ha'].sum().reset_index()
+
+    # Cálculo do Coeficiente Kappa e Acurácia usando as sobreposições espaciais
+    # Consideramos o ano_1 como referência (Ground Truth) e o ano_2 como a predição mapeada
+    y_true = overlap['cat_ano1']
+    y_pred = overlap['cat_ano2']
+    
+    # Pesando as amostras pelas áreas ponderadas dos polígonos correspondentes para maior rigor espacial
+    sample_weight = overlap['area_ha'].values
+    
+    # Métricas de Acurácia
+    acc_global = accuracy_score(y_true, y_pred, sample_weight=sample_weight)
+    kappa_idx = cohen_kappa_score(y_true, y_pred, sample_weight=sample_weight)
+
+    # Montagem do Relatório em Texto
     linhas_relatorio = []
     linhas_relatorio.append("=" * 125)
-    linhas_relatorio.append(f" RELATÓRIO DE PERDAS LÍQUIDAS E DESTINOS DE USO DO SOLO")
-    linhas_relatorio.append(f" MUNICÍPIO: {nome_cidade} - {uf} (IBGE: {code_muni}) | PERÍODO: {ano_1} vs {ano_2}")
+    linhas_relatorio.append(f" RELATÓRIO DE PERDAS LÍQUIDAS, DESTINOS E VALIDAÇÃO ESTATÍSTICA")
+    linhas_relatorio.append(f" MUNICÍPIO: {nome_cidade} - {uf} (IBGE: {code_muni}) | PERÍODO: {ano_1} (Ref) vs {ano_2}")
     linhas_relatorio.append("=" * 125)
     
     header = f"{'CATEGORIA':<32} | {ano_1 + ' (ha)':<12} | {ano_2 + ' (ha)':<12} | {'DIFERENÇA':<10} | {'NOVA CATEGORIA (Destino)':<32} | {'ÁREA (ha)':<10}"
@@ -109,15 +129,21 @@ def main():
 
         linhas_relatorio.append("-" * 125)
 
-    linhas_relatorio.append("=" * 125)
+    # Seção de Validação Estatística (Kappa e Acurácia Global)
+    linhas_relatorio.append("\n" + "=" * 60)
+    linhas_relatorio.append(" VALIDAÇÃO ESTATÍSTICA DA CLASSIFICAÇÃO (GROUND TRUTH COMPARATIVO)")
+    linhas_relatorio.append("=" * 60)
+    linhas_relatorio.append(f" • Acurácia Global (Accuracy): {acc_global * 100:.2f}%")
+    linhas_relatorio.append(f" • Coeficiente Kappa (Kappa Index): {kappa_idx:.4f}")
+    linhas_relatorio.append("=" * 60)
 
-    relatorio_nome = f"{code_muni}_change_report_losses_{ano_1}_vs_{ano_2}.txt"
+    relatorio_nome = f"{code_muni}_change_report_losses_kappa_{ano_1}_vs_{ano_2}.txt"
     relatorio_path = os.path.join(reports_dir, relatorio_nome)
 
     with open(relatorio_path, 'w', encoding='utf-8') as f:
         f.write("\n".join(linhas_relatorio))
 
-    print(f"\n[SUCESSO] Relatório gerado com sucesso em:\n-> {relatorio_path}\n")
+    print(f"\n[SUCESSO] Relatório com métricas Kappa gerado em:\n-> {relatorio_path}\n")
 
 if __name__ == "__main__":
     main()
