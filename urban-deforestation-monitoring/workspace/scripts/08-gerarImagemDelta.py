@@ -2,9 +2,57 @@ import os
 import sys
 import geopandas as gpd
 import pandas as pd
-import matplotlib.pyplot as plt
 import geobr
 from dotenv import load_dotenv
+
+# Dicionário de metadados e cores oficiais das categorias
+class_metadata = {}
+
+def registar_categoria(ids, name, color, iso120, iso122, iso123):
+    for i in ids:
+        class_metadata[i] = {
+            'name': name,
+            'color': color,
+            'iso_37120': iso120,
+            'iso_37122': iso122,
+            'iso_37123': iso123
+        }
+
+registar_categoria([3], 'Floresta', '#006400', 'Area verde (ha) por 100.000 hab.', 'Monitorizacao IoT', 'Mitigacao de Ilhas de Calor.')
+registar_categoria([9], 'Floresta Antrópica', '#93c47d', 'Area verde (ha) por 100.000 hab.', 'Monitorizacao IoT', 'Mitigacao de Ilhas de Calor.')
+registar_categoria([11, 12, 36], 'Vegetacao Herbacea e Arbustiva', '#a8c04d', 'Biodiversidade local', 'Risco de queimadas', 'Buffer Zones.')
+registar_categoria([15, 19, 20, 21, 39, 41, 46, 48], 'Agropecuaria (Campos, Lavouras)', '#edde8e', 'Protecao de terras', 'Agrotech', 'Seguranca alimentar.')
+registar_categoria([24, 25], 'Infraestrutura Urbana', '#d4271e', 'Densidade populacional', 'Smart Grids', 'Vulnerabilidade a desastres.')
+registar_categoria([29, 31, 33], 'Nao Observado (Agua, Rocha)', '#0000ff', 'Disponibilidade hidrica', 'Telemetria', 'Prevencao de inundacoes.')
+registar_categoria([4, 5, 6, 23, 27, 30, 32, 35, 40, 47, 49, 50, 62, 75], 'Descartadas', '#A9A9A9', 'N/A', 'N/A', 'N/A')
+
+def gerar_estilo_qml_automatico(caminho_qml, metadata):
+    categorias, simbolos = "", ""
+    classes_unicas = {info['name']: info['color'] for info in metadata.values()}
+    
+    for i, (nome, cor) in enumerate(classes_unicas.items()):
+        h = cor.lstrip('#')
+        r, g, b = tuple(int(h[j:j+2], 16) for j in (0, 2, 4))
+        symbol_name = str(i)
+        categorias += f'<category render="true" symbol="{symbol_name}" value="{nome}" label="{nome}"/>\n'
+        simbolos += f"""
+        <symbol alpha="1" type="fill" name="{symbol_name}">
+            <layer pass="0" class="SimpleFill" locked="0">
+                <prop k="color" v="{r},{g},{b},255"/>
+                <prop k="outline_style" v="no"/>
+            </layer>
+        </symbol>"""
+
+    conteudo_qml = f"""<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
+<qgis styleCategories="AllStyleCategories" version="3.28.0">
+    <renderer-v2 attr="class_name" type="categorizedSymbol">
+        <categories>{categorias}</categories>
+        <symbols>{simbolos}</symbols>
+    </renderer-v2>
+</qgis>"""
+    
+    with open(caminho_qml, 'w', encoding='utf-8') as f:
+        f.write(conteudo_qml)
 
 def main():
     if len(sys.argv) < 4:
@@ -42,7 +90,7 @@ def main():
         sys.exit(1)
 
     print("=" * 115)
-    print(f"🗺️ GERANDO DELTA VETORIAL E IMAGEM COLORIDA AUTOMÁTICA")
+    print(f"🗺️ GERANDO DELTA VETORIAL COM ESTILO AUTOMÁTICO (QML)")
     print(f"📍 MUNICÍPIO: {nome_cidade} - {uf} | PERÍODO: {ano_inicio} vs {ano_fim}")
     print("=" * 115)
 
@@ -71,55 +119,27 @@ def main():
     print("Executando overlay espacial para isolar o Delta...")
     overlap = gpd.overlay(gdf1[['cat_ini', 'geometry']], gdf2[['cat_fim', 'geometry']], how='intersection', keep_geom_type=True)
     delta_gdf = overlap[overlap['cat_ini'] != overlap['cat_fim']].copy()
+    
     delta_gdf['class_id'] = delta_gdf['cat_fim']
-
-    # Dicionário oficial de cores baseado nas suas regras de negócio
-    color_dict = {
-        3: '#006400',  # Floresta
-        9: '#93c47d',  # Floresta Antrópica
-        11: '#a8c04d', 12: '#a8c04d', 36: '#a8c04d',  # Vegetacao Herbacea e Arbustiva
-        15: '#edde8e', 19: '#edde8e', 20: '#edde8e', 21: '#edde8e', 
-        39: '#edde8e', 41: '#edde8e', 46: '#edde8e', 48: '#edde8e',  # Agropecuaria
-        24: '#d4271e', 25: '#d4271e',  # Infraestrutura Urbana
-        29: '#0000ff', 31: '#0000ff', 33: '#0000ff'   # Nao Observado (Agua, Rocha)
-    }
     
-    # Descartadas / Ruídos recebem cinza/apagado
-    descartadas = [4, 5, 6, 23, 27, 30, 32, 35, 40, 47, 49, 50, 62, 75]
-    for c in descartadas:
-        color_dict[c] = '#A9A9A9'
+    # Atribuir o nome correto da classe baseado no dicionário
+    delta_gdf['class_name'] = delta_gdf['class_id'].apply(
+        lambda x: class_metadata[x]['name'] if x in class_metadata else f"ID_{x}"
+    )
 
-    delta_gdf['color'] = delta_gdf['class_id'].map(color_dict).fillna('#A9A9A9')
+    out_prefix = f"{code_muni}_delta_vector_{ano_inicio}_vs_{ano_fim}"
+    out_shp_path = os.path.join(mask_dir, f"{out_prefix}.shp")
+    out_qml_path = os.path.join(mask_dir, f"{out_prefix}.qml")
 
-    # Salvar o Shapefile Delta
-    out_shp_name = f"{code_muni}_delta_vector_{ano_inicio}_vs_{ano_fim}.shp"
-    out_shp_path = os.path.join(mask_dir, out_shp_name)
-    delta_gdf[['class_id', 'color', 'geometry']].to_file(out_shp_path)
+    # Salvar shapefile com as colunas de ID e Nome da Classe
+    delta_gdf[['class_id', 'class_name', 'geometry']].to_file(out_shp_path)
+    
+    # Gerar arquivo de estilo QML correspondente
+    gerar_estilo_qml_automatico(out_qml_path, class_metadata)
+
     print(f"✓ Shapefile delta salvo em:\n-> {out_shp_path}")
-
-    # -------------------------------------------------------------
-    # GERAÇÃO AUTOMÁTICA DA IMAGEM PNG COM FUNDO PRETO E CORES REAIS
-    # -------------------------------------------------------------
-    print("Renderizando imagem PNG colorida com fundo preto de forma automática...")
-    fig, ax = plt.subplots(figsize=(12, 12), facecolor='black')
-    ax.set_facecolor('black')
-
-    # Desenhar cada categoria separadamente para aplicar exatamente a cor correspondente
-    for cid, hex_color in color_dict.items():
-        subset = delta_gdf[delta_gdf['class_id'] == cid]
-        if not subset.empty:
-            subset.plot(ax=ax, color=hex_color, edgecolor=hex_color, linewidth=0.1)
-
-    ax.axis('off')
-    plt.tight_layout()
-
-    out_png_name = f"{code_muni}_delta_colored_{ano_inicio}_vs_{ano_fim}.png"
-    out_png_path = os.path.join(mask_dir, out_png_name)
-    
-    plt.savefig(out_png_path, dpi=300, bbox_inches='tight', facecolor=fig.get_facecolor(), edgecolor='none')
-    plt.close()
-
-    print(f"✓ Imagem PNG colorida gerada com sucesso em:\n-> {out_png_path}")
+    print(f"✓ Estilo automático QML gerado em:\n-> {out_qml_path}")
+    print("\n[SUCESSO] Ao abrir o .shp no QGIS, as cores serão aplicadas automaticamente!")
 
 if __name__ == "__main__":
     main()
