@@ -94,21 +94,18 @@ def main():
 
     df = pd.DataFrame(estatisticas_lista, columns=['ID_Segmento', 'Quantidade_Pixels', 'Taxa_HoR', 'Classe_Majoritaria'])
 
-    # --- CORREÇÃO DE TIPAGEM E VERIFICAÇÃO ---
     if df.empty:
         print("\n❌ ERRO CRÍTICO: Nenhum superpixel sobreviveu aos filtros de fragmentação e tamanho.")
         print("Tente flexibilizar os limites de área ou o percentual de fragmentação no script.")
         sys.exit(1)
 
-    # Força os tipos corretos para evitar o TypeError no nlargest
     df['Taxa_HoR'] = pd.to_numeric(df['Taxa_HoR'], errors='coerce')
     df['Quantidade_Pixels'] = pd.to_numeric(df['Quantidade_Pixels'], errors='coerce')
-    df = df.dropna(subset=['Taxa_HoR']) # Remove qualquer NaN resultante
+    df = df.dropna(subset=['Taxa_HoR'])
 
     df_floresta = df[df['Classe_Majoritaria'] == 'Floresta']
     df_nao_floresta = df[df['Classe_Majoritaria'] == 'Nao_Floresta']
 
-    # Seleção dos melhores candidatos baseados na métrica HoR
     perf_f = df_floresta.nlargest(min(25, len(df_floresta)), 'Taxa_HoR')
     perf_f['Tipo_Selecao'] = 'Perfeito (100%)'
 
@@ -128,7 +125,6 @@ def main():
     h_img, w_img = sat_data.shape[1], sat_data.shape[2]
     rgb_normalized = np.zeros((3, h_img, w_img), dtype=np.uint8)
     
-    # Melhoramento de contraste usando percentis para imagens mais vivas
     for b_idx in range(min(3, sat_data.shape[0])):
         b_data = sat_data[b_idx].astype(np.float32)
         p2, p98 = np.percentile(b_data[b_data > 0], (2, 98)) if np.any(b_data > 0) else (0, 1)
@@ -148,7 +144,7 @@ def main():
         mask_sp = (labels == sp_id)
         
         # Isolar novamente apenas o maior componente para evitar resquícios (pontos soltos)
-        labeled_mask, _ = label(mask_sp)
+        labeled_mask = label(mask_sp)
         props = regionprops(labeled_mask)
         largest_comp = max(props, key=lambda r: r.area)
         clean_mask = (labeled_mask == largest_comp.label)
