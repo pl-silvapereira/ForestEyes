@@ -73,8 +73,8 @@ def main():
             
         area = largest_comp.area
         
-        # Filtro de tamanho mínimo para garantir visibilidade razoável
-        if area < 250 or area > 5000:
+        # Filtro de tamanho mínimo para garantir visibilidade razoável e volume de dados
+        if area < 100 or area > 5000:
             continue
         
         if sat_data.shape[0] >= 3:
@@ -93,6 +93,17 @@ def main():
         estatisticas_lista.append([sp_id, area, round(hor_simulado, 2), classe])
 
     df = pd.DataFrame(estatisticas_lista, columns=['ID_Segmento', 'Quantidade_Pixels', 'Taxa_HoR', 'Classe_Majoritaria'])
+
+    # --- CORREÇÃO DE TIPAGEM E VERIFICAÇÃO ---
+    if df.empty:
+        print("\n❌ ERRO CRÍTICO: Nenhum superpixel sobreviveu aos filtros de fragmentação e tamanho.")
+        print("Tente flexibilizar os limites de área ou o percentual de fragmentação no script.")
+        sys.exit(1)
+
+    # Força os tipos corretos para evitar o TypeError no nlargest
+    df['Taxa_HoR'] = pd.to_numeric(df['Taxa_HoR'], errors='coerce')
+    df['Quantidade_Pixels'] = pd.to_numeric(df['Quantidade_Pixels'], errors='coerce')
+    df = df.dropna(subset=['Taxa_HoR']) # Remove qualquer NaN resultante
 
     df_floresta = df[df['Classe_Majoritaria'] == 'Floresta']
     df_nao_floresta = df[df['Classe_Majoritaria'] == 'Nao_Floresta']
@@ -152,7 +163,6 @@ def main():
         w_obj = x_indices.max() - x_indices.min()
 
         # 3. Janela Mínima Garantida (Evita o estiramento pixelado e fornece contexto)
-        # Pelo menos 100 pixels de raio (janela 200x200), ou mais se o objeto for muito grande
         half_size = max(100, max(h_obj, w_obj) // 2 + 60)
         
         ymin, ymax = max(0, cy - half_size), min(h_img, cy + half_size)
@@ -173,7 +183,6 @@ def main():
 
         # 5. Salva sem causar interpolação destrutiva
         fig, ax = plt.subplots(figsize=(6, 6), dpi=300)
-        # Com a janela de contexto maior, a interpolação antialiased gera um resultado natural
         ax.imshow(patch_rgb, interpolation='antialiased')
         ax.axis('off')
         plt.tight_layout(pad=0)
