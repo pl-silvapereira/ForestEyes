@@ -24,7 +24,7 @@ def main():
         diretorio_scripts = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(diretorio_scripts)
 
-    # Nova subpasta solicitada: data/output/mask/black/
+    # Subpasta solicitada: data/output/mask/black/
     mask_black_dir = os.path.join(project_root, "data", "output", "mask", "black")
     os.makedirs(mask_black_dir, exist_ok=True)
 
@@ -92,11 +92,13 @@ def main():
     print("Salvando raster resultante na pasta mask/black...")
     with rasterio.open(out_tif_path, 'w', **meta) as dst:
         dst.write(out_data)
-        # Definir explicitamente a interpretação de cores das bandas para o padrão RGBA
-        dst.colorinterp[0] = ColorInterp.red
-        dst.colorinterp[1] = ColorInterp.green
-        dst.colorinterp[2] = ColorInterp.blue
-        dst.colorinterp[3] = ColorInterp.alpha
+        # Definir a interpretação de cores das 4 bandas de uma só vez (tupla)
+        dst.colorinterp = (
+            ColorInterp.red,
+            ColorInterp.green,
+            ColorInterp.blue,
+            ColorInterp.alpha
+        )
 
     print(f"\n[SUCESSO] Máscara com fundo preto e pontos transparentes gerada em:\n-> {out_tif_path}")
 
