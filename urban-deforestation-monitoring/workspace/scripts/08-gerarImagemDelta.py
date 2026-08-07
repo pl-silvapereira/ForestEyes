@@ -3,6 +3,7 @@ import sys
 import rasterio
 from rasterio.features import rasterize
 import geopandas as gpd
+import pandas as pd
 import numpy as np
 import geobr
 from dotenv import load_dotenv
@@ -37,11 +38,8 @@ def main():
         uf = "SP"
         print(f"⚠️ Aviso ao buscar nome da cidade: {e}")
 
-    # Caminhos dos shapefiles classificados (que você mencionou)
     path_shp_inicio = os.path.join(project_root, "data", "output", "classification", ano_inicio, f"{code_muni}_Classificado_ForestEyes_{ano_inicio}.shp")
     path_shp_fim = os.path.join(project_root, "data", "output", "classification", ano_fim, f"{code_muni}_Classificado_ForestEyes_{ano_fim}.shp")
-    
-    # Caminho opcional do satélite
     path_sat = os.path.join(project_root, "data", "output", "pansharpening", "multispectral-RGBN-bands", ano_fim, f"{code_muni}_multispectral_RGBN_{ano_fim}.tif")
 
     if not os.path.exists(path_shp_inicio) or not os.path.exists(path_shp_fim):
@@ -63,8 +61,23 @@ def main():
     gdf1 = gdf1.to_crs(utm_crs)
     gdf2 = gdf2.to_crs(utm_crs)
 
-    # Definir resolução espacial de 10 metros para o raster delta
-    resolution = 10.0 # metros
+    # Identificar automaticamente a coluna de código/classe no GeoDataFrame
+    def obter_coluna_classe(gdf):
+        candidatos = ['class_code', 'gridcode', 'id', 'value', 'class_id', 'DN']
+        for c in candidatos:
+            if c in gdf.columns:
+                return c
+        # Se não achar nenhuma conhecida, pega a primeira coluna numérica que não seja geometria
+        for col in gdf.columns:
+            if col != 'geometry' and pd.api.types.is_numeric_dtype(gdf[col]):
+                return col
+        return None
+
+    col1 = obter_coluna_classe(gdf1)
+    col2 = obter_coluna_classe(gdf2)
+
+    # Definir resolução espacial de 10 metros
+    resolution = 10.0
     xmin, ymin, xmax, ymax = gdf2.total_bounds
     width = int(np.ceil((xmax - xmin) / resolution))
     height = int(np.ceil((ymax - ymin) / resolution))
@@ -82,12 +95,18 @@ def main():
         'nodata': 0
     }
 
-    print("Rasterizando base do ano inicial...")
-    shapes1 = [(geom, int(val) if pd.notnull(val) else 0) for geom, val in zip(gdf1.geometry, gdf1.get('class_code', 1))]
+    print(f"Rasterizando base do ano inicial (usando coluna: {col1})...")
+    if col1:
+        shapes1 = [(geom, int(val) if pd.notnull(val) else 1) for geom, val in zip(gdf1.geometry, gdf1[col1])]
+    else:
+        shapes1 = [(geom, 1) for geom in gdf1.geometry]
     arr1 = rasterize(shapes1, out_shape=(height, width), transform=transform, fill=0, dtype=rasterio.int32)
 
-    print("Rasterizando base do ano final...")
-    shapes2 = [(geom, int(val) if pd.notnull(val) else 0) for geom, val in zip(gdf2.geometry, gdf2.get('class_code', 1))]
+    print(f"Rasterizando base do ano final (usando coluna: {col2})...")
+    if col2:
+        shapes2 = [(geom, int(val) if pd.notnull(val) else 1) for geom, val in zip(gdf2.geometry, gdf2[col2])]
+    else:
+        shapes2 = [(geom, 1) for geom in gdf2.geometry]
     arr2 = rasterize(shapes2, out_shape=(height, width), transform=transform, fill=0, dtype=rasterio.int32)
 
     # Gerar imagem delta: onde arr1 != arr2 mantemos arr2, senão máscara preta (0)
@@ -122,7 +141,7 @@ def main():
 
         print(f"✓ Imagem delta de satélite salva em:\n-> {out_sat_path}")
     else:
-        print(f"⚠️ [AVISO] Raster de satélite correspondente não encontrado. Apenas a imagem delta vetorial/rasterizada foi gerada.")
+        print(f"⚠️ [AVISO] Raster de satélite correspondente não encontrado. Apenas a imagem delta rasterizada foi gerada.")
 
     print("\n[SUCESSO] Processo de geração de imagens delta concluído!")
 
