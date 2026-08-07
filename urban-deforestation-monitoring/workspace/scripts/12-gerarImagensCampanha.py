@@ -4,8 +4,9 @@ import numpy as np
 import pandas as pd
 import rasterio
 import matplotlib.pyplot as plt
-from scipy.ndimage import center_of_mass
 from skimage.segmentation import find_boundaries
+from skimage.measure import label, regionprops
+from scipy.ndimage import binary_dilation
 from dotenv import load_dotenv
 
 def main():
@@ -39,7 +40,7 @@ def main():
         sys.exit(1)
 
     print("=" * 115)
-    print(f"🎯 GERANDO PATCHES DE ALTA NITIDEZ E CLOSE ADEQUADO (PADRÃO FORESTEYES)")
+    print(f"🎯 GERANDO PATCHES NÍTIDOS: CONTEXTO AMPLO E ALVOS CONTÍGUOS (PADRÃO FORESTEYES)")
     print(f"📍 MUNICÍPIO: {code_muni} | PERÍODO: {ano_inicio} vs {ano_fim}")
     print("=" * 115)
 
@@ -53,16 +54,28 @@ def main():
     ids_unicos = np.unique(labels)
     ids_unicos = ids_unicos[ids_unicos > 0]
 
-    if len(ids_unicos) == 0:
-        print("[ERRO CRÍTICO] Nenhum superpixel encontrado na matriz de labels.")
-        sys.exit(1)
-
-    print(f"Total de superpixels detectados: {len(ids_unicos)}. Calculando métricas...")
+    print(f"Total de superpixels detectados: {len(ids_unicos)}. Filtrando e calculando métricas...")
 
     estatisticas_lista = []
     for sp_id in ids_unicos:
         mask_sp = (labels == sp_id)
-        area = np.sum(mask_sp)
+        
+        # 1. Filtro de Fragmentação: Garante que o superpixel é uma peça unida, não pontos soltos
+        labeled_mask, num_features = label(mask_sp, return_num=True)
+        if num_features == 0: continue
+        
+        props = regionprops(labeled_mask)
+        largest_comp = max(props, key=lambda r: r.area)
+        
+        # Se a maior parte do superpixel for menor que 85% do total, ele é fragmentado/ruído. Ignoramos.
+        if largest_comp.area / mask_sp.sum() < 0.85:
+            continue
+            
+        area = largest_comp.area
+        
+        # Filtro de tamanho mínimo para garantir visibilidade razoável
+        if area < 250 or area > 5000:
+            continue
         
         if sat_data.shape[0] >= 3:
             r = sat_data[0][mask_sp].astype(np.float32)
@@ -80,12 +93,11 @@ def main():
         estatisticas_lista.append([sp_id, area, round(hor_simulado, 2), classe])
 
     df = pd.DataFrame(estatisticas_lista, columns=['ID_Segmento', 'Quantidade_Pixels', 'Taxa_HoR', 'Classe_Majoritaria'])
-    df_filtrado = df[(df['Quantidade_Pixels'] >= 100) & (df['Quantidade_Pixels'] <= 5000)].copy()
 
-    df_floresta = df_filtrado[df_filtrado['Classe_Majoritaria'] == 'Floresta']
-    df_nao_floresta = df_filtrado[df_filtrado['Classe_Majoritaria'] == 'Nao_Floresta']
+    df_floresta = df[df['Classe_Majoritaria'] == 'Floresta']
+    df_nao_floresta = df[df['Classe_Majoritaria'] == 'Nao_Floresta']
 
-    # Seleção rigorosa dos 100 alvos
+    # Seleção dos melhores candidatos baseados na métrica HoR
     perf_f = df_floresta.nlargest(min(25, len(df_floresta)), 'Taxa_HoR')
     perf_f['Tipo_Selecao'] = 'Perfeito (100%)'
 
@@ -100,10 +112,12 @@ def main():
 
     df_campanha = pd.concat([perf_f, imp_f, perf_nf, imp_nf])
     
-    print(f"\nSeleção concluída. Total de imagens a gerar: {len(df_campanha)}")
+    print(f"Seleção concluída. Total de imagens limpas a gerar: {len(df_campanha)}")
 
     h_img, w_img = sat_data.shape[1], sat_data.shape[2]
     rgb_normalized = np.zeros((3, h_img, w_img), dtype=np.uint8)
+    
+    # Melhoramento de contraste usando percentis para imagens mais vivas
     for b_idx in range(min(3, sat_data.shape[0])):
         b_data = sat_data[b_idx].astype(np.float32)
         p2, p98 = np.percentile(b_data[b_data > 0], (2, 98)) if np.any(b_data > 0) else (0, 1)
@@ -120,57 +134,54 @@ def main():
         tipo = row['Tipo_Selecao']
         hor = row['Taxa_HoR']
 
-        y_indices, x_indices = np.where(labels == sp_id)
-        if len(y_indices) == 0:
-            continue
+        mask_sp = (labels == sp_id)
+        
+        # Isolar novamente apenas o maior componente para evitar resquícios (pontos soltos)
+        labeled_mask, _ = label(mask_sp)
+        props = regionprops(labeled_mask)
+        largest_comp = max(props, key=lambda r: r.area)
+        clean_mask = (labeled_mask == largest_comp.label)
+        
+        y_indices, x_indices = np.where(clean_mask)
+        
+        # 2. Centralização Geométrica (Bounding Box)
+        cy = (y_indices.max() + y_indices.min()) // 2
+        cx = (x_indices.max() + x_indices.min()) // 2
+        
+        h_obj = y_indices.max() - y_indices.min()
+        w_obj = x_indices.max() - x_indices.min()
 
-        # 1. Encontra o centróide exato do superpixel
-        cy, cx = center_of_mass(labels == sp_id)
-        cy, cx = int(cy), int(cx)
-
-        # 2. Janela ajustada para dar o zoom correto na feição (raio menor para evitar o aspecto embaçado/distante)
-        half_size = 28 # Raio otimizado para fechar o enquadramento na medida certa
+        # 3. Janela Mínima Garantida (Evita o estiramento pixelado e fornece contexto)
+        # Pelo menos 100 pixels de raio (janela 200x200), ou mais se o objeto for muito grande
+        half_size = max(100, max(h_obj, w_obj) // 2 + 60)
+        
         ymin, ymax = max(0, cy - half_size), min(h_img, cy + half_size)
         xmin, xmax = max(0, cx - half_size), min(w_img, cx + half_size)
 
         patch = rgb_normalized[:, ymin:ymax, xmin:xmax]
         patch_rgb = np.moveaxis(patch, 0, -1)
         
-        patch_labels = (labels[ymin:ymax, xmin:xmax] == sp_id)
+        patch_labels = clean_mask[ymin:ymax, xmin:xmax]
 
-        # 3. Desenho do contorno amarelo de alta visibilidade com espessura aprimorada
+        # 4. Desenha o contorno limpo e dilata 1 pixel para ficar bem visível
         borders = find_boundaries(patch_labels, mode='inner')
-        # Expande ligeiramente a borda para garantir que fique bem visível na imagem final
-        from scipy.ndimage import binary_dilation
         borders_dilated = binary_dilation(borders, iterations=1)
-        patch_rgb[borders_dilated] = [255, 255, 0] # Amarelo vivo padrão ForestEyes
+        patch_rgb[borders_dilated] = [255, 255, 0] # Amarelo visível
 
         nome_arquivo = f"target_{contador:03d}_{classe}_{tipo.split()[0]}_HoR_{hor:.1f}_ID_{sp_id}.png"
         caminho_png = os.path.join(campaign_dir, nome_arquivo)
 
-        # 4. Salvamento limpo garantindo alta definição (DPI 300)
-        fig, ax = plt.subplots(figsize=(5, 5), dpi=300)
-        ax.imshow(patch_rgb, interpolation='nearest')
+        # 5. Salva sem causar interpolação destrutiva
+        fig, ax = plt.subplots(figsize=(6, 6), dpi=300)
+        # Com a janela de contexto maior, a interpolação antialiased gera um resultado natural
+        ax.imshow(patch_rgb, interpolation='antialiased')
         ax.axis('off')
         plt.tight_layout(pad=0)
         plt.savefig(caminho_png, dpi=300, bbox_inches='tight', pad_inches=0, facecolor='black')
         plt.close()
         contador += 1
 
-    print(f"\n[SUCESSO] {contador} imagens de alta resolução ajustadas salvas em:\n-> {campaign_dir}")
-
-    # Relatório Estatístico
-    print("\n" + "="*60)
-    print("📊 RELATÓRIO ESTATÍSTICO DE HoR DOS SUPERPIXELS")
-    print("="*60)
-    for classe_nome, subset in [("FLORESTA", df_floresta), ("NÃO FLORESTA", df_nao_floresta)]:
-        print(f"\n🌲 Classe: {classe_nome} (Total avaliados: {len(subset)})")
-        if len(subset) > 0:
-            print(f"   - HoR Médio: {subset['Taxa_HoR'].mean():.2f}%")
-            print(f"   - HoR Mediana: {subset['Taxa_HoR'].median():.2f}%")
-            print(f"   - HoR Desvio Padrão: {subset['Taxa_HoR'].std():.2f}%")
-            print(f"   - Tamanho Médio (px): {subset['Quantidade_Pixels'].mean():.2f}")
-    print("="*60)
+    print(f"\n[SUCESSO] {contador} imagens salvas com sucesso em:\n-> {campaign_dir}")
 
 if __name__ == "__main__":
     main()
