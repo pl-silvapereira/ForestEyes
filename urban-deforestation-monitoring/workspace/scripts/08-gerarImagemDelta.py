@@ -1,10 +1,7 @@
 import os
 import sys
-import rasterio
-from rasterio.features import rasterize
 import geopandas as gpd
 import pandas as pd
-import numpy as np
 import geobr
 from dotenv import load_dotenv
 
@@ -44,7 +41,7 @@ def main():
         sys.exit(1)
 
     print("=" * 115)
-    print(f"🖼️ GERANDO IMAGENS DELTA COM PALETA DE CORES PERSONALIZADA")
+    print(f"🗺️ GERANDO SHAPEFILE DELTA (VETORIAL DE MUDANÇAS)")
     print(f"📍 MUNICÍPIO: {nome_cidade} - {uf} | PERÍODO: {ano_inicio} vs {ano_fim}")
     print("=" * 115)
 
@@ -67,72 +64,38 @@ def main():
     col1 = obter_coluna_classe(gdf1)
     col2 = obter_coluna_classe(gdf2)
 
-    resolution = 10.0
-    xmin, ymin, xmax, ymax = gdf2.total_bounds
-    width = int(np.ceil((xmax - xmin) / resolution))
-    height = int(np.ceil((ymax - ymin) / resolution))
-    transform = rasterio.transform.from_bounds(xmin, ymin, xmax, ymax, width, height)
+    # Padronizar nome da coluna de classe para o cruzamento
+    gdf1['cat_ini'] = gdf1[col1] if col1 else 1
+    gdf2['cat_fim'] = gdf2[col2] if col2 else 1
 
-    shapes1 = [(geom, int(val) if pd.notnull(val) else 1) for geom, val in zip(gdf1.geometry, gdf1[col1])] if col1 else [(geom, 1) for geom in gdf1.geometry]
-    arr1 = rasterize(shapes1, out_shape=(height, width), transform=transform, fill=0, dtype=rasterio.int32)
+    print("Executando overlay espacial para isolar apenas o que mudou...")
+    # Realiza a intersecção geográfica entre os dois anos
+    overlap = gpd.overlay(gdf1[['cat_ini', 'geometry']], gdf2[['cat_fim', 'geometry']], how='intersection', keep_geom_type=True)
 
-    shapes2 = [(geom, int(val) if pd.notnull(val) else 1) for geom, val in zip(gdf2.geometry, gdf2[col2])] if col2 else [(geom, 1) for geom in gdf2.geometry]
-    arr2 = rasterize(shapes2, out_shape=(height, width), transform=transform, fill=0, dtype=rasterio.int32)
+    # Filtra mantendo apenas onde a categoria do ano inicio é DIFERENTE da categoria do ano fim (o Delta real)
+    delta_gdf = overlap[overlap['cat_ini'] != overlap['cat_fim']].copy()
 
-    # Onde não houve mudança (arr1 == arr2), o valor vira 0 (máscara preta)
-    delta_class = np.where(arr1 != arr2, arr2, 0).astype(np.int32)
+    # A classe final do delta passa a ser a categoria do ano fim (para refletir a nova classe)
+    delta_gdf['class_id'] = delta_gdf['cat_fim']
 
-    # Função auxiliar para converter cor HEX para tupla RGB (0-255)
-    def hex_to_rgb(hex_str):
-        hex_str = hex_str.lstrip('#')
-        return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4))
-
-    # Mapeamento oficial baseado nas suas categorias e códigos do MapBiomas
-    # Construindo o dicionário de cores completo para o Rasterio (RGB)
-    colormap = {0: (0, 0, 0)} # 0 = Máscara preta para áreas sem alteração
-
-    mapeamento_hex = {
-        # Floresta
-        3: '#006400',
-        # Floresta Antrópica
-        9: '#93c47d',
-        # Vegetacao Herbacea e Arbustiva
+    # Dicionário de cores HEX que você especificou para associar ao atributo de estilo se necessário
+    cores_map = {
+        3: '#006400', 9: '#93c47d', 
         11: '#a8c04d', 12: '#a8c04d', 36: '#a8c04d',
-        # Agropecuaria (Campos, Lavouras)
-        15: '#edde8e', 19: '#edde8e', 20: '#edde8e', 21: '#edde8e', 
-        39: '#edde8e', 41: '#edde8e', 46: '#edde8e', 48: '#edde8e',
-        # Infraestrutura Urbana
+        15: '#edde8e', 19: '#edde8e', 20: '#edde8e', 21: '#edde8e', 39: '#edde8e', 41: '#edde8e', 46: '#edde8e', 48: '#edde8e',
         24: '#d4271e', 25: '#d4271e',
-        # Nao Observado (Agua, Rocha)
-        29: '#0000ff', 31: '#0000ff', 33: '#0000ff',
-        # Descartadas
-        4: '#A9A9A9', 5: '#A9A9A9', 6: '#A9A9A9', 23: '#A9A9A9', 
-        27: '#A9A9A9', 30: '#A9A9A9', 32: '#A9A9A9', 35: '#A9A9A9', 
-        40: '#A9A9A9', 47: '#A9A9A9', 49: '#A9A9A9', 50: '#A9A9A9', 
-        62: '#A9A9A9', 75: '#A9A9A9'
+        29: '#0000ff', 31: '#0000ff', 33: '#0000ff'
     }
-
-    for code, hex_val in mapeamento_hex.items():
-        colormap[code] = hex_to_rgb(hex_val)
-
-    meta = {
-        'driver': 'GTiff',
-        'dtype': 'int32',
-        'count': 1,
-        'width': width,
-        'height': height,
-        'transform': transform,
-        'crs': utm_crs,
-        'nodata': 0
-    }
-
-    out_class_path = os.path.join(mask_dir, f"{code_muni}_delta_classification_{ano_inicio}_vs_{ano_fim}.tif")
     
-    with rasterio.open(out_class_path, 'w', **meta) as dst:
-        dst.write(delta_class, 1)
-        dst.write_colormap(1, colormap)
+    delta_gdf['color'] = delta_gdf['class_id'].map(cores_map).fillna('#A9A9A9')
 
-    print(f"✓ Imagem delta colorida com máscara preta salva em:\n-> {out_class_path}")
+    out_shp_name = f"{code_muni}_delta_vector_{ano_inicio}_vs_{ano_fim}.shp"
+    out_shp_path = os.path.join(mask_dir, out_shp_name)
+
+    # Salvar o shapefile resultante
+    delta_gdf[['class_id', 'color', 'geometry']].to_file(out_shp_path)
+
+    print(f"✓ Shapefile delta gerado com sucesso em:\n-> {out_shp_path}")
 
 if __name__ == "__main__":
     main()
