@@ -4,13 +4,14 @@ import numpy as np
 import pandas as pd
 import rasterio
 import matplotlib.pyplot as plt
+from scipy.ndimage import center_of_mass
+from skimage.segmentation import find_boundaries
 from dotenv import load_dotenv
 
 def main():
     if len(sys.argv) < 4:
         print("❌ Erro: Parâmetros insuficientes.")
         print("Uso correto: python 12-gerarImagensCampanha.py <code_muni> <ano_inicio> <ano_fim>")
-        print("Exemplo: python 12-gerarImagensCampanha.py 3549904 2023 2024")
         sys.exit(1)
 
     code_muni = int(sys.argv[1])
@@ -23,7 +24,6 @@ def main():
         diretorio_scripts = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(diretorio_scripts)
 
-    # Pastas de entrada e saída
     segmentation_dir = os.path.join(project_root, "data", "output", "mask", "segmentation")
     campaign_dir = os.path.join(project_root, "data", "output", "mask", "campaign")
     os.makedirs(campaign_dir, exist_ok=True)
@@ -36,12 +36,10 @@ def main():
 
     if not os.path.exists(path_labels) or not os.path.exists(path_sat):
         print(f"[ERRO CRÍTICO] Arquivos de segmentação ou satélite não encontrados.")
-        print(f"-> Labels: {path_labels}")
-        print(f"-> Satélite: {path_sat}")
         sys.exit(1)
 
     print("=" * 115)
-    print(f"🎯 GERANDO IMAGENS PNG DE ALTA RESOLUÇÃO PARA O ZOONIVERSE (ANO: {ano_fim})")
+    print(f"🎯 GERANDO PATCHES CENTRALIZADOS E NÍTICOS (PADRÃO ZOONIVERSE)")
     print(f"📍 MUNICÍPIO: {code_muni} | PERÍODO: {ano_inicio} vs {ano_fim}")
     print("=" * 115)
 
@@ -50,7 +48,7 @@ def main():
         labels = src_lab.read(1)
 
     with rasterio.open(path_sat) as src_sat:
-        sat_data = src_sat.read() # (Bands, H, W)
+        sat_data = src_sat.read()
 
     ids_unicos = np.unique(labels)
     ids_unicos = ids_unicos[ids_unicos > 0]
@@ -59,7 +57,7 @@ def main():
         print("[ERRO CRÍTICO] Nenhum superpixel encontrado na matriz de labels.")
         sys.exit(1)
 
-    print(f"Total de superpixels detectados: {len(ids_unicos)}. Calculando métricas e montando dataset...")
+    print(f"Total de superpixels detectados: {len(ids_unicos)}. Calculando métricas...")
 
     estatisticas_lista = []
     for sp_id in ids_unicos:
@@ -76,7 +74,6 @@ def main():
             is_floresta = True
 
         classe = "Floresta" if is_floresta else "Nao_Floresta"
-        
         std_val = np.std(r) if sat_data.shape[0] >= 3 else 10
         hor_simulado = max(70.0, min(100.0, 100.0 - (std_val * 0.5)))
         
@@ -88,7 +85,7 @@ def main():
     df_floresta = df_filtrado[df_filtrado['Classe_Majoritaria'] == 'Floresta']
     df_nao_floresta = df_filtrado[df_filtrado['Classe_Majoritaria'] == 'Nao_Floresta']
 
-    # Seleção dos 100 alvos (50 Floresta / 50 Não-Floresta, divididos em perfeitos e imperfeitos)
+    # Seleção dos 100 alvos rigorosos
     perf_f = df_floresta.nlargest(min(25, len(df_floresta)), 'Taxa_HoR')
     perf_f['Tipo_Selecao'] = 'Perfeito (100%)'
 
@@ -103,8 +100,7 @@ def main():
 
     df_campanha = pd.concat([perf_f, imp_f, perf_nf, imp_nf])
     
-    print(f"\nSeleção concluída. Total de alvos selecionados: {len(df_campanha)}")
-    print("Normalizando e gerando patches PNG de alta resolução...")
+    print(f"\nSeleção concluída. Total de imagens a gerar: {len(df_campanha)}")
 
     h_img, w_img = sat_data.shape[1], sat_data.shape[2]
     rgb_normalized = np.zeros((3, h_img, w_img), dtype=np.uint8)
@@ -128,43 +124,49 @@ def main():
         if len(y_indices) == 0:
             continue
 
-        # Centro do superpixel
-        y_cent = int(np.mean(y_indices))
-        x_cent = int(np.mean(x_indices))
+        # 1. Cálculo matemático rigoroso do centro exato (centróide) do superpixel
+        cy, cx = center_of_mass(labels == sp_id)
+        cy, cx = int(cy), int(cx)
 
-        # Janela de contexto ampla (ex: 80 pixels para cada lado para dar contexto paisagístico ideal)
-        pad = 80
-        ymin, ymax = max(0, y_cent - pad), min(h_img, y_cent + pad)
-        xmin, xmax = max(0, x_cent - pad), min(w_img, x_cent + pad)
+        # 2. Janela de zoom fixa ao redor do centro (Garante que o alvo fica 100% no meio)
+        half_size = 50 # Define o raio de contexto visual ao redor do alvo
+        ymin, ymax = max(0, cy - half_size), min(h_img, cy + half_size)
+        xmin, xmax = max(0, cx - half_size), min(w_img, cx + half_size)
 
-        # Recortar patch RGB e matriz de labels correspondente
+        # Tratamento de borda caso o superpixel esteja muito próximo aos limites da imagem
+        if (ymax - ymin) < (2 * half_size):
+            if ymin == 0: ymax = min(h_img, 2 * half_size)
+            else: ymin = max(0, h_img - 2 * half_size)
+        if (xmax - xmin) < (2 * half_size):
+            if xmin == 0: xmax = min(w_img, 2 * half_size)
+            else: xmin = max(0, w_img - 2 * half_size)
+
         patch = rgb_normalized[:, ymin:ymax, xmin:xmax]
         patch_rgb = np.moveaxis(patch, 0, -1)
         
         patch_labels = (labels[ymin:ymax, xmin:xmax] == sp_id)
 
-        # Desenhar contorno nítido em branco ao redor do superpixel central alvo
-        from skimage.segmentation import find_boundaries
+        # 3. Desenhar contorno amarelo de alta visibilidade (R=255, G=255, B=0)
         borders = find_boundaries(patch_labels, mode='inner')
-        patch_rgb[borders] = [255, 255, 255] # Contorno branco de alta visibilidade
+        patch_rgb[borders] = [255, 255, 0]
 
-        # Salvar PNG de alta qualidade com interpolação bicúbica
         nome_arquivo = f"target_{contador:03d}_{classe}_{tipo.split()[0]}_HoR_{hor:.1f}_ID_{sp_id}.png"
         caminho_png = os.path.join(campaign_dir, nome_arquivo)
 
-        fig, ax = plt.subplots(figsize=(6, 6), dpi=300)
-        ax.imshow(patch_rgb, interpolation='bicubic') # <--- Remove o efeito pixelado/quadriculado bruto
+        # 4. Renderização limpa e focada sem distorção
+        fig, ax = plt.subplots(figsize=(5, 5), dpi=300)
+        ax.imshow(patch_rgb, interpolation='nearest')
         ax.axis('off')
         plt.tight_layout(pad=0)
         plt.savefig(caminho_png, dpi=300, bbox_inches='tight', pad_inches=0, facecolor='black')
         plt.close()
         contador += 1
 
-    print(f"\n[SUCESSO] {contador} imagens PNG de alta resolução geradas e salvas em:\n-> {campaign_dir}")
+    print(f"\n[SUCESSO] {contador} imagens centralizadas e nítidas geradas em:\n-> {campaign_dir}")
 
-    # Relatório Estatístico de HoR
+    # Relatório Estatístico
     print("\n" + "="*60)
-    print("📊 RELATÓRIO ESTATÍSTICO DE HoR DOS SUPERPIXELS (CAMPANHA)")
+    print("📊 RELATÓRIO ESTATÍSTICO DE HoR DOS SUPERPIXELS")
     print("="*60)
     for classe_nome, subset in [("FLORESTA", df_floresta), ("NÃO FLORESTA", df_nao_floresta)]:
         print(f"\n🌲 Classe: {classe_nome} (Total avaliados: {len(subset)})")
