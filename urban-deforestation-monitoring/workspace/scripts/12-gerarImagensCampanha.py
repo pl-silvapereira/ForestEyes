@@ -39,7 +39,7 @@ def main():
         sys.exit(1)
 
     print("=" * 115)
-    print(f"🎯 GERANDO PATCHES CENTRALIZADOS E NÍTICOS (PADRÃO ZOONIVERSE)")
+    print(f"🎯 GERANDO PATCHES DE ALTA NITIDEZ E CLOSE ADEQUADO (PADRÃO FORESTEYES)")
     print(f"📍 MUNICÍPIO: {code_muni} | PERÍODO: {ano_inicio} vs {ano_fim}")
     print("=" * 115)
 
@@ -85,7 +85,7 @@ def main():
     df_floresta = df_filtrado[df_filtrado['Classe_Majoritaria'] == 'Floresta']
     df_nao_floresta = df_filtrado[df_filtrado['Classe_Majoritaria'] == 'Nao_Floresta']
 
-    # Seleção dos 100 alvos rigorosos
+    # Seleção rigorosa dos 100 alvos
     perf_f = df_floresta.nlargest(min(25, len(df_floresta)), 'Taxa_HoR')
     perf_f['Tipo_Selecao'] = 'Perfeito (100%)'
 
@@ -124,36 +124,31 @@ def main():
         if len(y_indices) == 0:
             continue
 
-        # 1. Cálculo matemático rigoroso do centro exato (centróide) do superpixel
+        # 1. Encontra o centróide exato do superpixel
         cy, cx = center_of_mass(labels == sp_id)
         cy, cx = int(cy), int(cx)
 
-        # 2. Janela de zoom fixa ao redor do centro (Garante que o alvo fica 100% no meio)
-        half_size = 50 # Define o raio de contexto visual ao redor do alvo
+        # 2. Janela ajustada para dar o zoom correto na feição (raio menor para evitar o aspecto embaçado/distante)
+        half_size = 28 # Raio otimizado para fechar o enquadramento na medida certa
         ymin, ymax = max(0, cy - half_size), min(h_img, cy + half_size)
         xmin, xmax = max(0, cx - half_size), min(w_img, cx + half_size)
-
-        # Tratamento de borda caso o superpixel esteja muito próximo aos limites da imagem
-        if (ymax - ymin) < (2 * half_size):
-            if ymin == 0: ymax = min(h_img, 2 * half_size)
-            else: ymin = max(0, h_img - 2 * half_size)
-        if (xmax - xmin) < (2 * half_size):
-            if xmin == 0: xmax = min(w_img, 2 * half_size)
-            else: xmin = max(0, w_img - 2 * half_size)
 
         patch = rgb_normalized[:, ymin:ymax, xmin:xmax]
         patch_rgb = np.moveaxis(patch, 0, -1)
         
         patch_labels = (labels[ymin:ymax, xmin:xmax] == sp_id)
 
-        # 3. Desenhar contorno amarelo de alta visibilidade (R=255, G=255, B=0)
+        # 3. Desenho do contorno amarelo de alta visibilidade com espessura aprimorada
         borders = find_boundaries(patch_labels, mode='inner')
-        patch_rgb[borders] = [255, 255, 0]
+        # Expande ligeiramente a borda para garantir que fique bem visível na imagem final
+        from scipy.ndimage import binary_dilation
+        borders_dilated = binary_dilation(borders, iterations=1)
+        patch_rgb[borders_dilated] = [255, 255, 0] # Amarelo vivo padrão ForestEyes
 
         nome_arquivo = f"target_{contador:03d}_{classe}_{tipo.split()[0]}_HoR_{hor:.1f}_ID_{sp_id}.png"
         caminho_png = os.path.join(campaign_dir, nome_arquivo)
 
-        # 4. Renderização limpa e focada sem distorção
+        # 4. Salvamento limpo garantindo alta definição (DPI 300)
         fig, ax = plt.subplots(figsize=(5, 5), dpi=300)
         ax.imshow(patch_rgb, interpolation='nearest')
         ax.axis('off')
@@ -162,7 +157,7 @@ def main():
         plt.close()
         contador += 1
 
-    print(f"\n[SUCESSO] {contador} imagens centralizadas e nítidas geradas em:\n-> {campaign_dir}")
+    print(f"\n[SUCESSO] {contador} imagens de alta resolução ajustadas salvas em:\n-> {campaign_dir}")
 
     # Relatório Estatístico
     print("\n" + "="*60)
