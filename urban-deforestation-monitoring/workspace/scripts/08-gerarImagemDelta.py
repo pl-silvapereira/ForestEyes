@@ -2,6 +2,7 @@ import os
 import sys
 import geopandas as gpd
 import pandas as pd
+import matplotlib.pyplot as plt
 import geobr
 from dotenv import load_dotenv
 
@@ -41,7 +42,7 @@ def main():
         sys.exit(1)
 
     print("=" * 115)
-    print(f"🗺️ GERANDO SHAPEFILE DELTA (VETORIAL DE MUDANÇAS)")
+    print(f"🗺️ GERANDO DELTA VETORIAL E IMAGEM COLORIDA AUTOMÁTICA")
     print(f"📍 MUNICÍPIO: {nome_cidade} - {uf} | PERÍODO: {ano_inicio} vs {ano_fim}")
     print("=" * 115)
 
@@ -64,38 +65,61 @@ def main():
     col1 = obter_coluna_classe(gdf1)
     col2 = obter_coluna_classe(gdf2)
 
-    # Padronizar nome da coluna de classe para o cruzamento
     gdf1['cat_ini'] = gdf1[col1] if col1 else 1
     gdf2['cat_fim'] = gdf2[col2] if col2 else 1
 
-    print("Executando overlay espacial para isolar apenas o que mudou...")
-    # Realiza a intersecção geográfica entre os dois anos
+    print("Executando overlay espacial para isolar o Delta...")
     overlap = gpd.overlay(gdf1[['cat_ini', 'geometry']], gdf2[['cat_fim', 'geometry']], how='intersection', keep_geom_type=True)
-
-    # Filtra mantendo apenas onde a categoria do ano inicio é DIFERENTE da categoria do ano fim (o Delta real)
     delta_gdf = overlap[overlap['cat_ini'] != overlap['cat_fim']].copy()
-
-    # A classe final do delta passa a ser a categoria do ano fim (para refletir a nova classe)
     delta_gdf['class_id'] = delta_gdf['cat_fim']
 
-    # Dicionário de cores HEX que você especificou para associar ao atributo de estilo se necessário
-    cores_map = {
-        3: '#006400', 9: '#93c47d', 
-        11: '#a8c04d', 12: '#a8c04d', 36: '#a8c04d',
-        15: '#edde8e', 19: '#edde8e', 20: '#edde8e', 21: '#edde8e', 39: '#edde8e', 41: '#edde8e', 46: '#edde8e', 48: '#edde8e',
-        24: '#d4271e', 25: '#d4271e',
-        29: '#0000ff', 31: '#0000ff', 33: '#0000ff'
+    # Dicionário oficial de cores baseado nas suas regras de negócio
+    color_dict = {
+        3: '#006400',  # Floresta
+        9: '#93c47d',  # Floresta Antrópica
+        11: '#a8c04d', 12: '#a8c04d', 36: '#a8c04d',  # Vegetacao Herbacea e Arbustiva
+        15: '#edde8e', 19: '#edde8e', 20: '#edde8e', 21: '#edde8e', 
+        39: '#edde8e', 41: '#edde8e', 46: '#edde8e', 48: '#edde8e',  # Agropecuaria
+        24: '#d4271e', 25: '#d4271e',  # Infraestrutura Urbana
+        29: '#0000ff', 31: '#0000ff', 33: '#0000ff'   # Nao Observado (Agua, Rocha)
     }
     
-    delta_gdf['color'] = delta_gdf['class_id'].map(cores_map).fillna('#A9A9A9')
+    # Descartadas / Ruídos recebem cinza/apagado
+    descartadas = [4, 5, 6, 23, 27, 30, 32, 35, 40, 47, 49, 50, 62, 75]
+    for c in descartadas:
+        color_dict[c] = '#A9A9A9'
 
+    delta_gdf['color'] = delta_gdf['class_id'].map(color_dict).fillna('#A9A9A9')
+
+    # Salvar o Shapefile Delta
     out_shp_name = f"{code_muni}_delta_vector_{ano_inicio}_vs_{ano_fim}.shp"
     out_shp_path = os.path.join(mask_dir, out_shp_name)
-
-    # Salvar o shapefile resultante
     delta_gdf[['class_id', 'color', 'geometry']].to_file(out_shp_path)
+    print(f"✓ Shapefile delta salvo em:\n-> {out_shp_path}")
 
-    print(f"✓ Shapefile delta gerado com sucesso em:\n-> {out_shp_path}")
+    # -------------------------------------------------------------
+    # GERAÇÃO AUTOMÁTICA DA IMAGEM PNG COM FUNDO PRETO E CORES REAIS
+    # -------------------------------------------------------------
+    print("Renderizando imagem PNG colorida com fundo preto de forma automática...")
+    fig, ax = plt.subplots(figsize=(12, 12), facecolor='black')
+    ax.set_facecolor('black')
+
+    # Desenhar cada categoria separadamente para aplicar exatamente a cor correspondente
+    for cid, hex_color in color_dict.items():
+        subset = delta_gdf[delta_gdf['class_id'] == cid]
+        if not subset.empty:
+            subset.plot(ax=ax, color=hex_color, edgecolor=hex_color, linewidth=0.1)
+
+    ax.axis('off')
+    plt.tight_layout()
+
+    out_png_name = f"{code_muni}_delta_colored_{ano_inicio}_vs_{ano_fim}.png"
+    out_png_path = os.path.join(mask_dir, out_png_name)
+    
+    plt.savefig(out_png_path, dpi=300, bbox_inches='tight', facecolor=fig.get_facecolor(), edgecolor='none')
+    plt.close()
+
+    print(f"✓ Imagem PNG colorida gerada com sucesso em:\n-> {out_png_path}")
 
 if __name__ == "__main__":
     main()
