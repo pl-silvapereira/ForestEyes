@@ -115,22 +115,13 @@ def main():
 
     print(f"Candidatos Floresta: {len(df_floresta)} | Candidatos Não-Floresta: {len(df_nao_floresta)}")
 
-    # Seleção exata de 100 imagens (50 floresta, 50 não-floresta)
-    perf_f = df_floresta.nlargest(25, 'Taxa_HoR').copy()
-    perf_f['Tipo_Selecao'] = 'Perfeito (100%)'
-    
-    imp_f = df_floresta.iloc[(df_floresta['Taxa_HoR'] - 70.0).abs().argsort()].head(25).copy()
-    imp_f['Tipo_Selecao'] = 'Imperfeito (~70%)'
-
-    perf_nf = df_nao_floresta.nlargest(25, 'Taxa_HoR').copy()
-    perf_nf['Tipo_Selecao'] = 'Perfeito (100%)'
-    
-    imp_nf = df_nao_floresta.iloc[(df_nao_floresta['Taxa_HoR'] - 70.0).abs().argsort()].head(25).copy()
-    imp_nf['Tipo_Selecao'] = 'Imperfeito (~70%)'
-
-    df_campanha = pd.concat([perf_f, imp_f, perf_nf, imp_nf])
-    
-    print(f"Seleção concluída. Renderizando exatamente {len(df_campanha)} imagens da campanha...")
+    # Filas ordenadas para garantir a extração sequencial ignorando nuvens
+    filas_processamento = {
+        'Floresta_Perfeito': df_floresta.sort_values(by='Taxa_HoR', ascending=False),
+        'Floresta_Imperfeito': df_floresta.iloc[(df_floresta['Taxa_HoR'] - 70.0).abs().argsort()],
+        'Nao_Floresta_Perfeito': df_nao_floresta.sort_values(by='Taxa_HoR', ascending=False),
+        'Nao_Floresta_Imperfeito': df_nao_floresta.iloc[(df_nao_floresta['Taxa_HoR'] - 70.0).abs().argsort()]
+    }
 
     h_img, w_img = sat_data.shape[1], sat_data.shape[2]
     rgb_normalized = np.zeros((3, h_img, w_img), dtype=np.uint8)
@@ -144,74 +135,94 @@ def main():
             norm = np.clip(b_data, 0, 255)
         rgb_normalized[b_idx] = norm.astype(np.uint8)
 
+    print("Renderizando exatamente 100 imagens da campanha...")
+    
     contador = 1
-    for idx, row in df_campanha.iterrows():
-        sp_id = int(row['ID_Segmento'])
-        classe = row['Classe_Majoritaria']
-        tipo = row['Tipo_Selecao']
-        hor = row['Taxa_HoR']
+    processed_ids = set()
 
-        slc = slices[sp_id - 1]
-        if slc is None: continue
+    for nome_fila, fila_df in filas_processamento.items():
+        salvos_nesta_categoria = 0
+        classe_str = "Floresta" if "Nao_Floresta" not in nome_fila else "Nao_Floresta"
+        tipo_str = "Perfeito" if "Perfeito" in nome_fila else "Imperfeito"
         
-        mask_sp_small = (labels[slc] == sp_id)
-        mask_sp_small = binary_closing(mask_sp_small, structure=np.ones((3,3)))
-        
-        labeled_mask = label(mask_sp_small)
-        props = regionprops(labeled_mask)
-        largest_comp = max(props, key=lambda r: r.area)
-        clean_mask_small = (labeled_mask == largest_comp.label)
-        clean_mask_small = binary_fill_holes(clean_mask_small)
-        
-        y_indices_small, x_indices_small = np.where(clean_mask_small)
-        
-        offset_y = slc[0].start
-        offset_x = slc[1].start
-        
-        cy = offset_y + (y_indices_small.max() + y_indices_small.min()) // 2
-        cx = offset_x + (x_indices_small.max() + x_indices_small.min()) // 2
-        
-        h_obj = y_indices_small.max() - y_indices_small.min()
-        w_obj = x_indices_small.max() - x_indices_small.min()
+        for idx, row in fila_df.iterrows():
+            if salvos_nesta_categoria >= 25:
+                break # Meta de 25 imagens por categoria atingida
+            
+            sp_id = int(row['ID_Segmento'])
+            hor = row['Taxa_HoR']
 
-        # Janela de zoom ajustada para enquadrar o superpixel centralizado de forma nítida
-        padding = 25
-        half_size = max(35, max(h_obj, w_obj) // 2 + padding)
-        
-        ymin, ymax = max(0, cy - half_size), min(h_img, cy + half_size)
-        xmin, xmax = max(0, cx - half_size), min(w_img, cx + half_size)
+            if sp_id in processed_ids:
+                continue
 
-        patch = rgb_normalized[:, ymin:ymax, xmin:xmax]
-        patch_rgb = np.moveaxis(patch, 0, -1)
+            slc = slices[sp_id - 1]
+            if slc is None: continue
+            
+            mask_sp_small = (labels[slc] == sp_id)
+            mask_sp_small = binary_closing(mask_sp_small, structure=np.ones((3,3)))
+            
+            labeled_mask = label(mask_sp_small)
+            props = regionprops(labeled_mask)
+            largest_comp = max(props, key=lambda r: r.area)
+            clean_mask_small = (labeled_mask == largest_comp.label)
+            clean_mask_small = binary_fill_holes(clean_mask_small)
+            
+            y_indices_small, x_indices_small = np.where(clean_mask_small)
+            
+            offset_y = slc[0].start
+            offset_x = slc[1].start
+            
+            cy = offset_y + (y_indices_small.max() + y_indices_small.min()) // 2
+            cx = offset_x + (x_indices_small.max() + x_indices_small.min()) // 2
+            
+            h_obj = y_indices_small.max() - y_indices_small.min()
+            w_obj = x_indices_small.max() - x_indices_small.min()
 
-        patch_labels = np.zeros((ymax - ymin, xmax - xmin), dtype=bool)
-        y_final = (y_indices_small + offset_y) - ymin
-        x_final = (x_indices_small + offset_x) - xmin
-        
-        valid = (y_final >= 0) & (y_final < patch_labels.shape[0]) & (x_final >= 0) & (x_final < patch_labels.shape[1])
-        patch_labels[y_final[valid], x_final[valid]] = True
+            padding = 25
+            half_size = max(35, max(h_obj, w_obj) // 2 + padding)
+            
+            ymin, ymax = max(0, cy - half_size), min(h_img, cy + half_size)
+            xmin, xmax = max(0, cx - half_size), min(w_img, cx + half_size)
 
-        # Desenho do contorno amarelo de alta visibilidade (1 único polígono por imagem)
-        borders = find_boundaries(patch_labels, mode='inner')
-        borders_dilated = binary_dilation(borders, iterations=1)
-        patch_rgb[borders_dilated] = [255, 255, 0]
+            patch = rgb_normalized[:, ymin:ymax, xmin:xmax]
+            patch_rgb = np.moveaxis(patch, 0, -1)
 
-        # Redimensionamento inteligente de alta nitidez (Evita o aspecto borrado/desfocado)
-        # Aplica um fator de zoom 4x na matriz mantendo os pixels limpos e definidos
-        zoom_factor = 4.0
-        patch_rgb_zoomed = np.zeros(
-            (int(patch_rgb.shape[0] * zoom_factor), int(patch_rgb.shape[1] * zoom_factor), 3),
-            dtype=patch_rgb.dtype
-        )
-        for c in range(3):
-            patch_rgb_zoomed[..., c] = zoom(patch_rgb[..., c], zoom_factor, order=0)
+            # --- FILTRO ANTI-NUVEM ---
+            # Se mais de 15% da imagem for muito clara (nuvem/reflexo), descarta e tenta a próxima
+            cloud_mask = (patch_rgb[..., 0] > 220) & (patch_rgb[..., 1] > 220) & (patch_rgb[..., 2] > 220)
+            if (np.sum(cloud_mask) / cloud_mask.size) > 0.15:
+                continue 
 
-        nome_arquivo = f"target_{contador:03d}_{classe}_{tipo.split()[0]}_HoR_{hor:.1f}_ID_{sp_id}.png"
-        caminho_png = os.path.join(campaign_dir, nome_arquivo)
+            patch_labels = np.zeros((ymax - ymin, xmax - xmin), dtype=bool)
+            y_final = (y_indices_small + offset_y) - ymin
+            x_final = (x_indices_small + offset_x) - xmin
+            
+            valid = (y_final >= 0) & (y_final < patch_labels.shape[0]) & (x_final >= 0) & (x_final < patch_labels.shape[1])
+            patch_labels[y_final[valid], x_final[valid]] = True
 
-        # Salvamento direto com DPI alto e sem margens extras
-        plt.imsave(caminho_png, patch_rgb_zoomed)
-        contador += 1
+            # --- REDIMENSIONAMENTO PARA 1024x1024 ---
+            target_size = 1024
+            zoom_y = target_size / patch_rgb.shape[0]
+            zoom_x = target_size / patch_rgb.shape[1]
+
+            patch_rgb_zoomed = np.zeros((target_size, target_size, 3), dtype=np.uint8)
+            for c in range(3):
+                patch_rgb_zoomed[..., c] = zoom(patch_rgb[..., c], (zoom_y, zoom_x), order=0)
+
+            # --- LINHA AMARELA FINA ---
+            # Aplica o zoom na máscara PRIMEIRO, para depois desenhar a borda
+            patch_labels_zoomed = zoom(patch_labels, (zoom_y, zoom_x), order=0)
+            borders = find_boundaries(patch_labels_zoomed, mode='inner')
+            borders_dilated = binary_dilation(borders, iterations=1) # Iteração = 1 garante uma linha fina
+            patch_rgb_zoomed[borders_dilated] = [255, 255, 0]
+
+            nome_arquivo = f"target_{contador:03d}_{classe_str}_{tipo_str}_HoR_{hor:.1f}_ID_{sp_id}.png"
+            caminho_png = os.path.join(campaign_dir, nome_arquivo)
+
+            plt.imsave(caminho_png, patch_rgb_zoomed)
+            processed_ids.add(sp_id)
+            salvos_nesta_categoria += 1
+            contador += 1
 
     print(f"\n[SUCESSO] {contador-1} imagens de alta nitidez geradas e salvas em:\n-> {campaign_dir}")
 
