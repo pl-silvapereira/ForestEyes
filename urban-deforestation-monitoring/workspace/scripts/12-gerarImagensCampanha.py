@@ -40,7 +40,7 @@ def main():
         sys.exit(1)
 
     print("=" * 115)
-    print(f"🎯 GERANDO PATCHES: RESOLUÇÃO NÍTIDA (720px) E FILTRO DE SUPERPIXELS FRAGMENTADOS")
+    print(f"🎯 GERANDO PATCHES: RESOLUÇÃO NÍTIDA (480px) E FILTRO DE SUPERPIXELS FRAGMENTADOS")
     print(f"📍 MUNICÍPIO: {code_muni} | PERÍODO: {ano_inicio} vs {ano_fim}")
     print("=" * 115)
 
