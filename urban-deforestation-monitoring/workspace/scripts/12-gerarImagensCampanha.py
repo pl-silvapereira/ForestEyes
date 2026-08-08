@@ -6,7 +6,7 @@ import rasterio
 import matplotlib.pyplot as plt
 from skimage.segmentation import find_boundaries
 from skimage.measure import label, regionprops
-from scipy.ndimage import binary_dilation, binary_fill_holes, find_objects
+from scipy.ndimage import binary_dilation, binary_fill_holes, find_objects, zoom
 from dotenv import load_dotenv
 
 def main():
@@ -40,13 +40,12 @@ def main():
         sys.exit(1)
 
     print("=" * 115)
-    print(f"🎯 GERANDO PATCHES: 100 IMAGENS (ALTA PERFORMANCE COM FIND_OBJECTS)")
+    print(f"🎯 GERANDO PATCHES DA CAMPANHA: ZOOM NÍTIDO E 1 ÚNICO SUPERPIXEL POR IMAGEM")
     print(f"📍 MUNICÍPIO: {code_muni} | PERÍODO: {ano_inicio} vs {ano_fim}")
     print("=" * 115)
 
     print("Lendo raster de labels e imagem de satélite...")
     with rasterio.open(path_labels) as src_lab:
-        # Importante: Garantir que o array seja int32 para o find_objects funcionar perfeitamente
         labels = src_lab.read(1).astype(np.int32)
 
     with rasterio.open(path_sat) as src_sat:
@@ -55,25 +54,22 @@ def main():
     ids_unicos = np.unique(labels)
     ids_unicos = ids_unicos[ids_unicos > 0]
 
-    print(f"Total de superpixels detectados: {len(ids_unicos)}.")
-    print("Otimizando processamento matricial (isso levará apenas alguns segundos)...")
+    print(f"Total de superpixels detectados: {len(ids_unicos)}. Processando e filtrando...")
 
-    # ====================================================================
-    # OTIMIZAÇÃO DE PERFORMANCE EXTREMA
-    # Pega as caixas delimitadoras de todos os 12.000 IDs de uma única vez
-    # ====================================================================
     slices = find_objects(labels)
-
     estatisticas_lista = []
+
     for sp_id in ids_unicos:
-        # Pega a posição na lista (sp_id costuma iniciar em 1)
         slc = slices[sp_id - 1]
         if slc is None:
             continue
         
-        # Filtra e processa APENAS a pequena região onde o superpixel existe!
         mask_sp_small = (labels[slc] == sp_id)
         
+        # Operação morfológica para unificar partes grudadas do mesmo superpixel
+        from scipy.ndimage import binary_closing
+        mask_sp_small = binary_closing(mask_sp_small, structure=np.ones((3,3)))
+
         labeled_mask, num_features = label(mask_sp_small, return_num=True)
         if num_features == 0: continue
         
@@ -88,7 +84,6 @@ def main():
         if area < 100 or area > 2000:
             continue
         
-        # Recorta do satélite apenas a região específica para avaliar o HoR
         sat_slice = sat_data[:, slc[0], slc[1]]
         
         if sat_slice.shape[0] >= 3:
@@ -120,6 +115,7 @@ def main():
 
     print(f"Candidatos Floresta: {len(df_floresta)} | Candidatos Não-Floresta: {len(df_nao_floresta)}")
 
+    # Seleção exata de 100 imagens (50 floresta, 50 não-floresta)
     perf_f = df_floresta.nlargest(25, 'Taxa_HoR').copy()
     perf_f['Tipo_Selecao'] = 'Perfeito (100%)'
     
@@ -134,7 +130,7 @@ def main():
 
     df_campanha = pd.concat([perf_f, imp_f, perf_nf, imp_nf])
     
-    print(f"Seleção concluída. Renderizando {len(df_campanha)} imagens finais...")
+    print(f"Seleção concluída. Renderizando exatamente {len(df_campanha)} imagens da campanha...")
 
     h_img, w_img = sat_data.shape[1], sat_data.shape[2]
     rgb_normalized = np.zeros((3, h_img, w_img), dtype=np.uint8)
@@ -159,6 +155,8 @@ def main():
         if slc is None: continue
         
         mask_sp_small = (labels[slc] == sp_id)
+        mask_sp_small = binary_closing(mask_sp_small, structure=np.ones((3,3)))
+        
         labeled_mask = label(mask_sp_small)
         props = regionprops(labeled_mask)
         largest_comp = max(props, key=lambda r: r.area)
@@ -167,7 +165,6 @@ def main():
         
         y_indices_small, x_indices_small = np.where(clean_mask_small)
         
-        # Mapeando coordenadas para a grade da imagem global original
         offset_y = slc[0].start
         offset_x = slc[1].start
         
@@ -177,8 +174,9 @@ def main():
         h_obj = y_indices_small.max() - y_indices_small.min()
         w_obj = x_indices_small.max() - x_indices_small.min()
 
-        padding = 30
-        half_size = max(40, max(h_obj, w_obj) // 2 + padding)
+        # Janela de zoom ajustada para enquadrar o superpixel centralizado de forma nítida
+        padding = 25
+        half_size = max(35, max(h_obj, w_obj) // 2 + padding)
         
         ymin, ymax = max(0, cy - half_size), min(h_img, cy + half_size)
         xmin, xmax = max(0, cx - half_size), min(w_img, cx + half_size)
@@ -186,31 +184,36 @@ def main():
         patch = rgb_normalized[:, ymin:ymax, xmin:xmax]
         patch_rgb = np.moveaxis(patch, 0, -1)
 
-        # Reconstrução matemática do contorno apenas nas dimensões da imagem final
         patch_labels = np.zeros((ymax - ymin, xmax - xmin), dtype=bool)
-        
         y_final = (y_indices_small + offset_y) - ymin
         x_final = (x_indices_small + offset_x) - xmin
         
         valid = (y_final >= 0) & (y_final < patch_labels.shape[0]) & (x_final >= 0) & (x_final < patch_labels.shape[1])
         patch_labels[y_final[valid], x_final[valid]] = True
 
+        # Desenho do contorno amarelo de alta visibilidade (1 único polígono por imagem)
         borders = find_boundaries(patch_labels, mode='inner')
         borders_dilated = binary_dilation(borders, iterations=1)
         patch_rgb[borders_dilated] = [255, 255, 0]
 
+        # Redimensionamento inteligente de alta nitidez (Evita o aspecto borrado/desfocado)
+        # Aplica um fator de zoom 4x na matriz mantendo os pixels limpos e definidos
+        zoom_factor = 4.0
+        patch_rgb_zoomed = np.zeros(
+            (int(patch_rgb.shape[0] * zoom_factor), int(patch_rgb.shape[1] * zoom_factor), 3),
+            dtype=patch_rgb.dtype
+        )
+        for c in range(3):
+            patch_rgb_zoomed[..., c] = zoom(patch_rgb[..., c], zoom_factor, order=0)
+
         nome_arquivo = f"target_{contador:03d}_{classe}_{tipo.split()[0]}_HoR_{hor:.1f}_ID_{sp_id}.png"
         caminho_png = os.path.join(campaign_dir, nome_arquivo)
 
-        fig, ax = plt.subplots(figsize=(6, 6), dpi=300)
-        ax.imshow(patch_rgb, interpolation='nearest')
-        ax.axis('off')
-        plt.tight_layout(pad=0)
-        plt.savefig(caminho_png, dpi=300, bbox_inches='tight', pad_inches=0, facecolor='black')
-        plt.close()
+        # Salvamento direto com DPI alto e sem margens extras
+        plt.imsave(caminho_png, patch_rgb_zoomed)
         contador += 1
 
-    print(f"\n[SUCESSO] {contador-1} imagens salvas rapidamente em:\n-> {campaign_dir}")
+    print(f"\n[SUCESSO] {contador-1} imagens de alta nitidez geradas e salvas em:\n-> {campaign_dir}")
 
 if __name__ == "__main__":
     main()
