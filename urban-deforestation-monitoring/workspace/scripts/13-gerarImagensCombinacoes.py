@@ -56,7 +56,7 @@ def main():
     ]
 
     print("=" * 115)
-    print(f"🎯 GERANDO CAMPANHA MULTI-VISUALIZAÇÃO (720px) - SCRIPT 13")
+    print(f"🎯 GERANDO CAMPANHA MULTI-VISUALIZAÇÃO (540px) - SCRIPT 13")
     print(f"📍 MUNICÍPIO: {code_muni} | ANO ALVO: {ano_fim}")
     print("=" * 115)
 
@@ -152,7 +152,7 @@ def main():
     print(f"Renderizando as combinações, CINZA e 3CLASSES (Alvo: 100 imagens validadas)...")
     contador = 1
     processed_ids = set()
-    target_size = 720
+    target_size = 540
 
     for nome_fila, fila_df in filas_processamento.items():
         salvos_nesta_categoria = 0
