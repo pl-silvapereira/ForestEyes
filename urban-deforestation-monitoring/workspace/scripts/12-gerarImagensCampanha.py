@@ -201,8 +201,8 @@ def main():
             valid = (y_final >= 0) & (y_final < patch_labels.shape[0]) & (x_final >= 0) & (x_final < patch_labels.shape[1])
             patch_labels[y_final[valid], x_final[valid]] = True
 
-            # --- REDIMENSIONAMENTO PARA 720x720 (E NITIDEZ APRIMORADA) ---
-            target_size = 720
+            # --- REDIMENSIONAMENTO PARA 640x640 (E NITIDEZ APRIMORADA) ---
+            target_size = 640
             zoom_y = target_size / patch_rgb.shape[0]
             zoom_x = target_size / patch_rgb.shape[1]
 
