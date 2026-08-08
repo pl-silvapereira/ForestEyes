@@ -25,7 +25,6 @@ def main():
         diretorio_scripts = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(diretorio_scripts)
 
-    # Definição dos caminhos
     segmentation_dir = os.path.join(project_root, "data", "output", "mask", "segmentation")
     campaign_dir = os.path.join(project_root, "data", "output", "mask", "campaign", ano_fim)
     
@@ -35,7 +34,6 @@ def main():
         ano_fim, f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_CLIPPED.tif"
     )
     
-    # 🎯 Caminho exato apontando para a pasta TIF do Script 04
     dir_combinacoes = os.path.join(
         project_root, "data", "output", "pansharpening", "multispectral-RGBN-bands", ano_fim, "tif"
     )
@@ -45,15 +43,16 @@ def main():
         sys.exit(1)
         
     if not os.path.exists(dir_combinacoes):
-        print(f"[ERRO CRÍTICO] Pasta de combinações do Script 04 não encontrada em:\n{dir_combinacoes}")
+        print(f"[ERRO CRÍTICO] Pasta TIF do Script 04 não encontrada em:\n{dir_combinacoes}")
         sys.exit(1)
 
-    # 🎯 Lista exata das combinações solicitadas
+    # 🎯 Lista exata mapeada conforme o padrão do seu modelo
     combinacoes_alvo = [
-        "B1_Azul_B2_Verde_B4_NIR.tif",
-        "B4_NIR_B3_Vermelho_B1_Azul.tif",
-        "B1_Azul_B3_Vermelho_B2_Verde.tif",
-        "B1_Azul_B4_NIR_B2_Verde.tif"
+        "composicao_B1_Azul_B2_Verde_B3_Vermelho_2024.tif",
+        "composicao_B1_Azul_B2_Verde_B4_NIR_2024.tif",
+        "composicao_B1_Azul_B3_Vermelho_B2_Verde_2024.tif",
+        "composicao_B1_Azul_B4_NIR_B2_Verde_2024.tif",
+        "composicao_B4_NIR_B3_Vermelho_B1_Azul_2024.tif"
     ]
 
     print("=" * 115)
@@ -86,7 +85,7 @@ def main():
     slices = find_objects(labels)
     estatisticas_lista = []
 
-    # Extração de atributos e cálculo de HoR
+    print("Calculando estatísticas e filtrando superpixels...")
     for sp_id in ids_unicos:
         slc = slices[sp_id - 1]
         if slc is None: continue
@@ -214,16 +213,13 @@ def main():
             borders = find_boundaries(patch_labels_zoomed, mode='inner')
             borders_dilated = binary_dilation(borders, iterations=2) 
             
-            # 🎯 Padrão de nome solicitado: composicao_[Banda]_..._[Ano].png
-            # Exemplo gerado: composicao_B2_Verde_B1_Azul_B3_Vermelho_2024.png
-            
+            # Nome padrão idêntico ao modelo informado
+            nome_arquivo_alvo = f"composicao_{classe_str}_{tipo_str}_ID_{sp_id}_{ano_fim}.png"
+
+            # Exportação das combinações TIF do Script 04
             for tif_name in tifs_encontrados:
                 subfolder_name = tif_name.replace(".tif", "")
                 out_dir = os.path.join(campaign_dir, subfolder_name)
-                
-                # Montagem do nome base da composição extraída do TIF
-                base_nome_comp = subfolder_name.replace("-", "_")
-                nome_arquivo_comp = f"composicao_{base_nome_comp}_{ano_fim}.png"
 
                 with rasterio.open(os.path.join(dir_combinacoes, tif_name)) as src_c:
                     window_comb = rasterio.windows.Window(xmin, ymin, xmax - xmin, ymax - ymin)
@@ -239,13 +235,10 @@ def main():
                         patch_c_zoomed[..., c] = zoom(patch_c_rgb[..., c], (zoom_y, zoom_x), order=3)
                         
                     patch_c_zoomed[borders_dilated] = [255, 255, 0] # Contorno Amarelo
-                    plt.imsave(os.path.join(out_dir, nome_arquivo_comp), patch_c_zoomed)
-
-            # Nomes padronizados para as pastas especiais (3CLASSES e CINZA)
-            nome_arquivo_especial = f"composicao_Alvo_{classe_str}_{tipo_str}_ID_{sp_id}_{ano_fim}.png"
+                    plt.imsave(os.path.join(out_dir, nome_arquivo_alvo), patch_c_zoomed)
 
             # =========================================================================
-            # 1. 3CLASSES (Verde = Floresta, Vermelho = Não Floresta, Preto = Máscara/Fundo)
+            # 1. 3CLASSES (Verde = Floresta, Vermelho = Não Floresta, Preto = Fundo)
             # =========================================================================
             patch_3classes = np.zeros((patch_labels.shape[0], patch_labels.shape[1], 3), dtype=np.uint8)
             cor_3c = [0, 255, 0] if classe_str == 'Floresta' else [255, 0, 0]
@@ -255,7 +248,7 @@ def main():
             for c in range(3):
                 patch_3c_zoomed[..., c] = zoom(patch_3classes[..., c], (zoom_y, zoom_x), order=0)
             
-            plt.imsave(os.path.join(campaign_dir, "3CLASSES", nome_arquivo_especial), patch_3c_zoomed)
+            plt.imsave(os.path.join(campaign_dir, "3CLASSES", nome_arquivo_alvo), patch_3c_zoomed)
 
             # =========================================================================
             # 2. CINZA (Grayscale com contorno Vermelho)
@@ -269,7 +262,7 @@ def main():
                 patch_gray_zoomed[..., c] = zoom(patch_gray_rgb[..., c], (zoom_y, zoom_x), order=3)
                 
             patch_gray_zoomed[borders_dilated] = [255, 0, 0] # Contorno Vermelho
-            plt.imsave(os.path.join(campaign_dir, "CINZA", nome_arquivo_especial), patch_gray_zoomed)
+            plt.imsave(os.path.join(campaign_dir, "CINZA", nome_arquivo_alvo), patch_gray_zoomed)
             
             processed_ids.add(sp_id)
             salvos_nesta_categoria += 1
@@ -279,7 +272,7 @@ def main():
                 sys.stdout.write(f"\r✅ {contador-1} alvos processados em todas as subpastas...")
                 sys.stdout.flush()
 
-    print(f"\n\n[SUCESSO] Processo concluído! Imagens salvas com sucesso em:\n-> {campaign_dir}")
+    print(f"\n\n[SUCESSO] Campanha gerada com sucesso em:\n-> {campaign_dir}")
 
 if __name__ == "__main__":
     main()
