@@ -234,7 +234,7 @@ def main():
                     for c in range(3):
                         patch_c_zoomed[..., c] = zoom(patch_c_rgb[..., c], (zoom_y, zoom_x), order=3)
                         
-                    patch_c_zoomed[borders_dilated] = [255, 255, 0] # Contorno Amarelo
+                    patch_c_zoomed[borders_dilated] = [0, 0, 255] # Contorno Azul
                     plt.imsave(os.path.join(out_dir, nome_arquivo_alvo), patch_c_zoomed)
 
             # =========================================================================
