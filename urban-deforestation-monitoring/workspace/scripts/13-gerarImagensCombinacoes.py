@@ -48,31 +48,31 @@ def main():
 
     # 🎯 Lista exata mapeada conforme o padrão do seu modelo
     combinacoes_alvo = [
-        "composicao_B4_NIR_B3_Vermelho_B2_Verde_2024.tif",
-        "composicao_B4_NIR_B3_Vermelho_B1_Azul_2024.tif",
-        "composicao_B4_NIR_B2_Verde_B3_Vermelho_2024.tif",
-        "composicao_B4_NIR_B2_Verde_B1_Azul_2024.tif",
-        "composicao_B4_NIR_B1_Azul_B3_Vermelho_2024.tif",
-        "composicao_B4_NIR_B1_Azul_B2_Verde_2024.tif",
-        "composicao_B3_Vermelho_B4_NIR_B2_Verde_2024.tif",
-        "composicao_B3_Vermelho_B2_Verde_B4_NIR_2024.tif",
-        "composicao_B3_Vermelho_B4_NIR_B1_Azul_2024.tif",
-        "composicao_B3_Vermelho_B2_Verde_B1_Azul_2024.tif",
-        "composicao_B3_Vermelho_B1_Azul_B4_NIR_2024.tif",
-        "composicao_B3_Vermelho_B1_Azul_B2_Verde_2024.tif",
-        "composicao_B2_Verde_B4_NIR_B1_Azul_2024.tif",
-        "composicao_B2_Verde_B4_NIR_B3_Vermelho_2024.tif",
-        "composicao_B2_Verde_B3_Vermelho_B4_NIR_2024.tif",
-        "composicao_B2_Verde_B3_Vermelho_B1_Azul_2024.tif",
-        "composicao_B1_Azul_B4_NIR_B3_Vermelho_2024.tif",
-        "composicao_B2_Verde_B1_Azul_B3_Vermelho_2024.tif",
-        "composicao_B2_Verde_B1_Azul_B4_NIR_2024.tif",
-        "composicao_B1_Azul_B3_Vermelho_B2_Verde_2024.tif",
-        "composicao_B1_Azul_B3_Vermelho_B4_NIR_2024.tif",
-        "composicao_B1_Azul_B4_NIR_B2_Verde_2024.tif",
-        "composicao_B1_Azul_B2_Verde_B4_NIR_2024.tif",
-        "composicao_B1_Azul_B2_Verde_B3_Vermelho_2024.tif"
-    ]
+    "composicao_B4_NIR_B3_Vermelho_B2_Verde_2024.tif",
+    "composicao_B4_NIR_B3_Vermelho_B1_Azul_2024.tif",
+    "composicao_B4_NIR_B2_Verde_B3_Vermelho_2024.tif",
+    "composicao_B4_NIR_B2_Verde_B1_Azul_2024.tif",
+    "composicao_B4_NIR_B1_Azul_B3_Vermelho_2024.tif",
+    "composicao_B4_NIR_B1_Azul_B2_Verde_2024.tif",
+    "composicao_B3_Vermelho_B4_NIR_B2_Verde_2024.tif",
+    "composicao_B3_Vermelho_B2_Verde_B4_NIR_2024.tif",
+    "composicao_B3_Vermelho_B4_NIR_B1_Azul_2024.tif",
+    "composicao_B3_Vermelho_B2_Verde_B1_Azul_2024.tif",
+    "composicao_B3_Vermelho_B1_Azul_B4_NIR_2024.tif",
+    "composicao_B3_Vermelho_B1_Azul_B2_Verde_2024.tif",
+    "composicao_B2_Verde_B4_NIR_B1_Azul_2024.tif",
+    "composicao_B2_Verde_B4_NIR_B3_Vermelho_2024.tif",
+    "composicao_B2_Verde_B3_Vermelho_B4_NIR_2024.tif",
+    "composicao_B2_Verde_B3_Vermelho_B1_Azul_2024.tif",
+    "composicao_B1_Azul_B4_NIR_B3_Vermelho_2024.tif",
+    "composicao_B2_Verde_B1_Azul_B3_Vermelho_2024.tif",
+    "composicao_B2_Verde_B1_Azul_B4_NIR_2024.tif",
+    "composicao_B1_Azul_B3_Vermelho_B2_Verde_2024.tif",
+    "composicao_B1_Azul_B3_Vermelho_B4_NIR_2024.tif",
+    "composicao_B1_Azul_B4_NIR_B2_Verde_2024.tif",
+    "composicao_B1_Azul_B2_Verde_B4_NIR_2024.tif",
+    "composicao_B1_Azul_B2_Verde_B3_Vermelho_2024.tif"
+]
 
     print("=" * 115)
     print(f"🎯 GERANDO CAMPANHA MULTI-VISUALIZAÇÃO (420px) - SCRIPT 13")
