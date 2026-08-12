@@ -40,7 +40,7 @@ def main():
         sys.exit(1)
 
     print("=" * 115)
-    print(f"🎯 GERANDO PATCHES: RESOLUÇÃO NÍTIDA (480px) E FILTRO DE SUPERPIXELS FRAGMENTADOS")
+    print(f"🎯 GERANDO PATCHES: RESOLUÇÃO NÍTIDA (420px) E FILTRO DE SUPERPIXELS FRAGMENTADOS")
     print(f"📍 MUNICÍPIO: {code_muni} | PERÍODO: {ano_inicio} vs {ano_fim}")
     print("=" * 115)
 
@@ -201,8 +201,8 @@ def main():
             valid = (y_final >= 0) & (y_final < patch_labels.shape[0]) & (x_final >= 0) & (x_final < patch_labels.shape[1])
             patch_labels[y_final[valid], x_final[valid]] = True
 
-            # --- REDIMENSIONAMENTO PARA 480x480 (E NITIDEZ APRIMORADA) ---
-            target_size = 480
+            # --- REDIMENSIONAMENTO PARA 420x420 (E NITIDEZ APRIMORADA) ---
+            target_size = 420
             zoom_y = target_size / patch_rgb.shape[0]
             zoom_x = target_size / patch_rgb.shape[1]
 
