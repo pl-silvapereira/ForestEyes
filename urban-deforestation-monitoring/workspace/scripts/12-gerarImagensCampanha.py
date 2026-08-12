@@ -217,7 +217,7 @@ def main():
             borders = find_boundaries(patch_labels_zoomed, mode='inner')
             # Aumentado para iterations=2 para deixar a linha visivelmente mais encorpada/grossa
             borders_dilated = binary_dilation(borders, iterations=2) 
-            patch_rgb_zoomed[borders_dilated] = [255, 255, 0]
+            patch_rgb_zoomed[borders_dilated] = [255, 0, 0]  # Novo Contorno Vermelho
 
             nome_arquivo = f"target_{contador:03d}_{classe_str}_{tipo_str}_HoR_{hor:.1f}_ID_{sp_id}.png"
             caminho_png = os.path.join(campaign_dir, nome_arquivo)
