@@ -48,15 +48,34 @@ def main():
 
     # 🎯 Lista exata mapeada conforme o padrão do seu modelo
     combinacoes_alvo = [
-        "composicao_B1_Azul_B2_Verde_B3_Vermelho_2024.tif",
-        "composicao_B1_Azul_B2_Verde_B4_NIR_2024.tif",
+        "composicao_B4_NIR_B3_Vermelho_B2_Verde_2024.tif",
+        "composicao_B4_NIR_B3_Vermelho_B1_Azul_2024.tif",
+        "composicao_B4_NIR_B2_Verde_B3_Vermelho_2024.tif",
+        "composicao_B4_NIR_B2_Verde_B1_Azul_2024.tif",
+        "composicao_B4_NIR_B1_Azul_B3_Vermelho_2024.tif",
+        "composicao_B4_NIR_B1_Azul_B2_Verde_2024.tif",
+        "composicao_B3_Vermelho_B4_NIR_B2_Verde_2024.tif",
+        "composicao_B3_Vermelho_B2_Verde_B4_NIR_2024.tif",
+        "composicao_B3_Vermelho_B4_NIR_B1_Azul_2024.tif",
+        "composicao_B3_Vermelho_B2_Verde_B1_Azul_2024.tif",
+        "composicao_B3_Vermelho_B1_Azul_B4_NIR_2024.tif",
+        "composicao_B3_Vermelho_B1_Azul_B2_Verde_2024.tif",
+        "composicao_B2_Verde_B4_NIR_B1_Azul_2024.tif",
+        "composicao_B2_Verde_B4_NIR_B3_Vermelho_2024.tif",
+        "composicao_B2_Verde_B3_Vermelho_B4_NIR_2024.tif",
+        "composicao_B2_Verde_B3_Vermelho_B1_Azul_2024.tif",
+        "composicao_B1_Azul_B4_NIR_B3_Vermelho_2024.tif",
+        "composicao_B2_Verde_B1_Azul_B3_Vermelho_2024.tif",
+        "composicao_B2_Verde_B1_Azul_B4_NIR_2024.tif",
         "composicao_B1_Azul_B3_Vermelho_B2_Verde_2024.tif",
+        "composicao_B1_Azul_B3_Vermelho_B4_NIR_2024.tif",
         "composicao_B1_Azul_B4_NIR_B2_Verde_2024.tif",
-        "composicao_B4_NIR_B3_Vermelho_B1_Azul_2024.tif"
+        "composicao_B1_Azul_B2_Verde_B4_NIR_2024.tif",
+        "composicao_B1_Azul_B2_Verde_B3_Vermelho_2024.tif"
     ]
 
     print("=" * 115)
-    print(f"🎯 GERANDO CAMPANHA MULTI-VISUALIZAÇÃO (480px) - SCRIPT 13")
+    print(f"🎯 GERANDO CAMPANHA MULTI-VISUALIZAÇÃO (420px) - SCRIPT 13")
     print(f"📍 MUNICÍPIO: {code_muni} | ANO ALVO: {ano_fim}")
     print("=" * 115)
 
@@ -152,7 +171,7 @@ def main():
     print(f"Renderizando as combinações, CINZA e 3CLASSES (Alvo: 100 imagens validadas)...")
     contador = 1
     processed_ids = set()
-    target_size = 480
+    target_size = 420
 
     for nome_fila, fila_df in filas_processamento.items():
         salvos_nesta_categoria = 0
