@@ -42,10 +42,10 @@ def main():
         print(f"[ERRO CRÍTICO] Shapefiles não encontrados para {ano_1} e/ou {ano_2}.")
         sys.exit(1)
 
-    print("=" * 125)
-    print(f"📊 GERANDO RELATÓRIO DE PERDAS LÍQUIDAS E DESTINOS DE USO DO SOLO")
+    print("=" * 135)
+    print(f"📊 GERANDO RELATÓRIO DETALHADO DE TRANSIÇÕES (PERDAS E GANHOS)")
     print(f"📍 MUNICÍPIO: {nome_cidade} - {uf} (IBGE: {code_muni}) | PERÍODO: {ano_1} vs {ano_2}")
-    print("=" * 125)
+    print("=" * 135)
 
     df1 = gpd.read_file(path_shp_1)
     df2 = gpd.read_file(path_shp_2)
@@ -63,7 +63,7 @@ def main():
 
     todas_categorias = sorted(list(set(totais_1.index).union(set(totais_2.index))))
 
-    print("Executando cruzamento espacial (Overlay) para rastrear o destino exato...")
+    print("Executando cruzamento espacial (Overlay) para rastrear todas as transições...")
     df1_sub = df1[['class_name', 'geometry']].rename(columns={'class_name': 'cat_ano1'})
     df2_sub = df2[['class_name', 'geometry']].rename(columns={'class_name': 'cat_ano2'})
     
@@ -72,59 +72,66 @@ def main():
     transicoes = overlap.groupby(['cat_ano1', 'cat_ano2'])['area_ha'].sum().reset_index()
 
     linhas_relatorio = []
-    linhas_relatorio.append("=" * 125)
-    linhas_relatorio.append(f" RELATÓRIO DE PERDAS LÍQUIDAS E DESTINOS DE USO DO SOLO")
+    linhas_relatorio.append("=" * 135)
+    linhas_relatorio.append(f" RELATÓRIO DETALHADO DE TRANSIÇÕES DE USO DO SOLO (PERDAS E GANHOS)")
     linhas_relatorio.append(f" MUNICÍPIO: {nome_cidade} - {uf} (IBGE: {code_muni}) | PERÍODO: {ano_1} vs {ano_2}")
-    linhas_relatorio.append("=" * 125)
+    linhas_relatorio.append("=" * 135)
     
-    header = f"{'CATEGORIA':<32} | {ano_1 + ' (ha)':<12} | {ano_2 + ' (ha)':<12} | {'DIFERENÇA':<10} | {'NOVA CATEGORIA (Destino)':<32} | {'ÁREA (ha)':<10}"
+    header = f"{'CATEGORIA':<32} | {ano_1 + ' (ha)':<12} | {ano_2 + ' (ha)':<12} | {'DIFERENÇA':<10} | {'DESTINO (Perda) / ORIGEM (Ganho)':<35} | {'ÁREA (ha)':<10}"
     linhas_relatorio.append(header)
-    linhas_relatorio.append("-" * 125)
+    linhas_relatorio.append("-" * 135)
 
     for cat in todas_categorias:
         val_1 = totais_1.get(cat, 0.0)
         val_2 = totais_2.get(cat, 0.0)
         dif = val_2 - val_1
 
-        destinos_list = []
+        detalhes_list = []
         
-        # Só preenchemos destinos se houve perda líquida real
+        # Caso 1: Perda líquida (Mostra para onde foi a área - Destinos)
         if dif < -0.01: 
-            # Filtra apenas as áreas que saíram dessa categoria para outra
             perdas_reais = transicoes[(transicoes['cat_ano1'] == cat) & (transicoes['cat_ano2'] != cat)]
             total_perda_bruta = perdas_reais['area_ha'].sum()
 
             if total_perda_bruta > 0:
-                # Calcula um fator para garantir que a soma dos destinos bata perfeitamente com a 'DIFERENÇA'
                 fator = abs(dif) / total_perda_bruta
-                
                 for _, row in perdas_reais.iterrows():
                     dest_cat = row['cat_ano2']
                     area_ajustada = row['area_ha'] * fator
-                    
                     if area_ajustada > 0.01:
-                        destinos_list.append((dest_cat, area_ajustada))
-                
-                # Ordena os destinos pela maior área transferida
-                destinos_list = sorted(destinos_list, key=lambda x: x[1], reverse=True)
+                        detalhes_list.append((dest_cat, area_ajustada))
+                detalhes_list = sorted(detalhes_list, key=lambda x: x[1], reverse=True)
 
-        if not destinos_list:
-            linha = f"{cat:<32} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+10.2f} | {'-':<32} | {'-':>10}"
+        # Caso 2: Ganho líquido (Mostra de onde veio a área - Origens)
+        elif dif > 0.01:
+            ganhos_reais = transicoes[(transicoes['cat_ano1'] != cat) & (transicoes['cat_ano2'] == cat)]
+            total_ganho_bruto = ganhos_reais['area_ha'].sum()
+
+            if total_ganho_bruto > 0:
+                fator = abs(dif) / total_ganho_bruto
+                for _, row in ganhos_reais.iterrows():
+                    orig_cat = row['cat_ano1']
+                    area_ajustada = row['area_ha'] * fator
+                    if area_ajustada > 0.01:
+                        detalhes_list.append((f"De: {orig_cat}", area_ajustada))
+                detalhes_list = sorted(detalhes_list, key=lambda x: x[1], reverse=True)
+
+        if not detalhes_list:
+            linha = f"{cat:<32} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+10.2f} | {'-':<35} | {'-':>10}"
             linhas_relatorio.append(linha)
         else:
             primeira_linha = True
-            for dest_cat, dest_area in destinos_list:
-                str_area = f"{dest_area:>+10.2f}"
+            for item_cat, item_area in detalhes_list:
+                str_area = f"{item_area:>+10.2f}"
                 if primeira_linha:
-                    linha = f"{cat:<32} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+10.2f} | {dest_cat:<32} | {str_area}"
+                    linha = f"{cat:<32} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+10.2f} | {item_cat:<35} | {str_area}"
                     primeira_linha = False
                 else:
-                    linha = f"{'':<32} | {'':<12} | {'':<12} | {'':<10} | {dest_cat:<32} | {str_area}"
+                    linha = f"{'':<32} | {'':<12} | {'':<12} | {'':<10} | {item_cat:<35} | {str_area}"
                 linhas_relatorio.append(linha)
 
-        linhas_relatorio.append("-" * 125)
-
-    linhas_relatorio.append("=" * 125)
+    linhas_relatorio.append("-" * 135)
+    linhas_relatorio.append("=" * 135)
 
     relatorio_nome = f"{code_muni}_change_report_losses_{ano_1}_vs_{ano_2}.txt"
     relatorio_path = os.path.join(reports_dir, relatorio_nome)
@@ -132,7 +139,7 @@ def main():
     with open(relatorio_path, 'w', encoding='utf-8') as f:
         f.write("\n".join(linhas_relatorio))
 
-    print(f"\n[SUCESSO] Relatório gerado com consistência geográfica e matemática em:\n-> {relatorio_path}\n")
+    print(f"\n[SUCESSO] Relatório detalhado gerado com sucesso em:\n-> {relatorio_path}\n")
 
 if __name__ == "__main__":
     main()
