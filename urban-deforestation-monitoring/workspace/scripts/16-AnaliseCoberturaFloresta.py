@@ -232,7 +232,7 @@ def main():
     print(f"\n[SUCESSO] Relatório analítico salvo em:\n-> {relatorio_path}")
 
     # 8. Geração da Imagem Geopolítica Global com Superpixels Coloridos (Floresta=Vermelho, Não-Floresta=Azul)
-    print("\nGerando imagem geopolítica global com superpixels coloridos (Floresta = Vermelho, Não-Floresta = Azul)...")[cite: 21]
+    print("\nGerando imagem geopolítica global com superpixels coloridos (Floresta = Vermelho, Não-Floresta = Azul)...")
     mapa_classes = dict(zip(df_metricas['segment_id'], df_metricas['classe']))
 
     rgb_full = np.zeros((3, height, width), dtype=np.uint8)
@@ -252,9 +252,8 @@ def main():
 
         classe = mapa_classes.get(sp_id, 'Floresta')
         
-        # 🎯 Regra de cores solicitada:
-        # Floresta = Vermelho [255, 0, 0] | Não-Floresta = Azul [0, 0, 255][cite: 21]
-        cor_borda = [255, 0, 0] if classe == 'Floresta' else [0, 0, 255][cite: 21]
+        # Cores: Floresta = Vermelho [255, 0, 0] | Não-Floresta = Azul [0, 0, 255]
+        cor_borda = [255, 0, 0] if classe == 'Floresta' else [0, 0, 255]
 
         borda_sp = find_boundaries(mask_sp, mode='outer')
         sub_img = img_visual[slc[0], slc[1]]
