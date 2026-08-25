@@ -33,66 +33,53 @@ def main():
     os.makedirs(reports_dir, exist_ok=True)
     os.makedirs(segmentation_dir, exist_ok=True)
 
-    path_shp_base = os.path.join(class_dir, ano_base, f"{code_muni}_Classificado_ForestEyes_{ano_base}.shp")
-    path_shp_alvo = os.path.join(class_dir, ano_alvo, f"{code_muni}_Classificado_ForestEyes_{ano_alvo}.shp")
+    path_shp_1 = os.path.join(class_dir, ano_base, f"{code_muni}_Classificado_ForestEyes_{ano_base}.shp")
+    path_shp_2 = os.path.join(class_dir, ano_alvo, f"{code_muni}_Classificado_ForestEyes_{ano_alvo}.shp")
     path_sat = os.path.join(
         project_root, "data", "output", "pansharpening", "geopolitic-RGBN", 
         ano_alvo, f"{code_muni}_{ano_alvo}_CBERS_TRUE_COLOR_CLIPPED.tif"
     )
 
-    if not os.path.exists(path_shp_base) or not os.path.exists(path_shp_alvo) or not os.path.exists(path_sat):
-        print("[ERRO CRÍTICO] Shapefiles de classificação ou imagem de satélite do ano alvo não encontrados.")
+    if not os.path.exists(path_shp_1) or not os.path.exists(path_shp_2) or not os.path.exists(path_sat):
+        print("[ERRO CRÍTICO] Shapefiles de classificação ou imagem de satélite não encontrados.")
         sys.exit(1)
 
     print("=" * 115)
-    print(f"🌲 SCRIPT 16 (REFATORADO): ANÁLISE DE FLORESTAS E SUPERPIXELS ({ano_base} vs {ano_alvo})")
+    print(f"🌲 SCRIPT 16 (FOCO EXCLUSIVO NA DIFERENÇA): ANÁLISE DE MUDANÇAS ({ano_base} vs {ano_alvo})")
     print(f"📍 MUNICÍPIO: {code_muni}")
     print("=" * 115)
 
-    # 1. Carregamento e Reprojecão rigorosa (Lógica inspirada no Script 07)
-    print(f"Carregando e padronizando bases de {ano_base} e {ano_alvo}...")
-    df1 = gpd.read_file(path_shp_base)
-    df2 = gpd.read_file(path_shp_alvo)
+    # 1. Carregar e padronizar bases (Lógica idêntica ao Script 07)[cite: 23]
+    print(f"Carregando classificações de {ano_base} e {ano_alvo}...")
+    df1 = gpd.read_file(path_shp_1)
+    df2 = gpd.read_file(path_shp_2)
 
     utm_crs = df1.estimate_utm_crs()
     df1 = df1.to_crs(utm_crs)
     df2 = df2.to_crs(utm_crs)
 
-    # Filtrar apenas geometrias de floresta no ano base
-    col_cls = 'class_name' if 'class_name' in df1.columns else 'class_id'
-    if col_cls == 'class_name':
-        floresta_base = df1[df1['class_name'].str.contains('Floresta', case=False, na=False)].copy()
-    else:
-        floresta_base = df1[df1['class_id'] == 3].copy()
+    df1['area_ha'] = df1.geometry.area / 10000.0
+    df2['area_ha'] = df2.geometry.area / 10000.0
 
-    floresta_base['area_ha'] = floresta_base.geometry.area / 10000.0
-    area_corte = floresta_base['area_ha'].quantile(0.25)
-    grandes_florestas = floresta_base[floresta_base['area_ha'] >= area_corte]
-    print(f"-> {len(grandes_florestas)} grandes fragmentos florestais isolados em {ano_base}.")
-
-    # 2. Cruzamento Espacial Preciso (Overlay idêntico ao Script 07)
-    print("Executando cruzamento espacial (Overlay) para rastrear transições exatas...")
-    df1_sub = grandes_florestas[['geometry']].copy()
-    df1_sub['cat_ano1'] = 'Floresta'
-    
-    df2_sub = df2[['geometry']].copy()
-    if 'class_name' in df2.columns:
-        df2_sub['cat_ano2'] = df2['class_name'].apply(lambda x: 'Floresta' if 'Floresta' in str(x) else 'Nao_Floresta')
-    else:
-        df2_sub['cat_ano2'] = df2['class_id'].apply(lambda x: 'Floresta' if x == 3 else 'Nao_Floresta')
+    # 2. Cruzamento Espacial para isolar APENAS o que mudou (Diferença / Delta)
+    print("Executando cruzamento espacial para extrair estritamente as áreas de transição (Diferença)...")
+    df1_sub = df1[['class_name', 'geometry']].rename(columns={'class_name': 'cat_ano1'})
+    df2_sub = df2[['class_name', 'geometry']].rename(columns={'class_name': 'cat_ano2'})
 
     overlap = gpd.overlay(df1_sub, df2_sub, how='intersection', keep_geom_type=True)
-    overlap['status_alvo'] = overlap['cat_ano2'] # 'Floresta' (Permanente) ou 'Nao_Floresta' (Supressão)
     overlap['area_m2'] = overlap.geometry.area
 
-    tot_permanente = overlap[overlap['status_alvo'] == 'Floresta']['area_m2'].sum() / 10000.0
-    tot_supressao = overlap[overlap['status_alvo'] == 'Nao_Floresta']['area_m2'].sum() / 10000.0
+    # FILTRAR APENAS AS MUDANÇAS REAIS (onde a categoria do ano 1 é diferente do ano 2)
+    delta_mudancas = overlap[overlap['cat_ano1'] != overlap['cat_ano2']].copy()
 
-    print(f"📊 Estatísticas Validadas de Transição:")
-    print(f"   - Permaneceu Floresta ({ano_base} -> {ano_alvo}): {tot_permanente:.2f} ha")
-    print(f"   - Converteu para Não-Floresta / Supressão: {tot_supressao:.2f} ha")
+    total_mudanca_ha = delta_mudancas['area_m2'].sum() / 10000.0
+    print(f"-> Área total de mudança detectada entre {ano_base} e {ano_alvo}: {total_mudanca_ha:.2f} ha")
 
-    # 3. Leitura do Raster e Máscara Anti-Nuvens (Lógica do Script 09)
+    if delta_mudancas.empty:
+        print("⚠️ Nenhuma mudança detectada entre os anos informados.")
+        sys.exit(0)
+
+    # 3. Leitura do Raster e Descarte de Nuvens (Lógica do Script 09)[cite: 21]
     print("Processando imagem raster e aplicando filtro anti-nuvem...")
     with rasterio.open(path_sat) as src:
         sat_meta = src.meta.copy()
@@ -101,7 +88,7 @@ def main():
         crs = src.crs
         height, width = src.height, src.width
 
-    overlap_raster_crs = overlap.to_crs(crs)
+    delta_raster_crs = delta_mudancas.to_crs(crs)
 
     if sat_img.shape[0] >= 3:
         r, g, b = sat_img[0], sat_img[1], sat_img[2]
@@ -111,13 +98,13 @@ def main():
     else:
         is_cloud = np.zeros((height, width), dtype=bool)
 
-    shapes_interesse = [(geom, 1) for geom in overlap_raster_crs.geometry]
+    shapes_interesse = [(geom, 1) for geom in delta_raster_crs.geometry]
     mask_interesse = rasterize(shapes_interesse, out_shape=(height, width), transform=transform, fill=0, dtype=np.uint8)
 
     mask_valida = (mask_interesse == 1) & (~is_cloud)
 
-    # 4. Segmentação por Superpixels (SLIC)
-    print("Executando segmentação por superpixels (SLIC) nas zonas validadas...")
+    # 4. Segmentação por Superpixels (SLIC) restrita exclusivamente à zona de diferença
+    print("Executando segmentação por superpixels (SLIC) estritamente nas áreas de mudança...")
     rgb_norm = np.zeros((3, height, width), dtype=np.float32)
     for b in range(min(3, sat_img.shape[0])):
         band = sat_img[b].astype(np.float32)
@@ -128,7 +115,7 @@ def main():
     
     segments = slic(
         sat_slic_input,
-        n_segments=max(50, int((height * width) / 5000)),
+        n_segments=max(20, int((height * width) / 10000)),
         compactness=15.0,
         mask=mask_valida,
         convert2lab=False,
@@ -137,11 +124,12 @@ def main():
     )
     segments[~mask_valida] = 0
 
-    # 5. Avaliação de Qualidade (HoR, Tamanho e Contagem por Classe)
-    print("Calculando métricas de HoR e contagem de segmentos...")
+    # 5. Avaliação de Qualidade e Atribuição de Classes (Floresta vs Não-Floresta)
+    print("Calculando métricas e classificando os superpixels da diferença...")
     shapes_classe_alvo = []
-    for _, row in overlap_raster_crs.iterrows():
-        val_cls = 1 if row['status_alvo'] == 'Floresta' else 2
+    for _, row in delta_raster_crs.iterrows():
+        # Se o destino (ano_alvo) for Floresta, classe = 1; senão = 2
+        val_cls = 1 if 'Floresta' in str(row['cat_ano2']) else 2
         shapes_classe_alvo.append((row.geometry, val_cls))
 
     raster_classe_alvo = rasterize(
@@ -193,17 +181,16 @@ def main():
         sys.exit(0)
 
     # 6. Geração do Relatório Textual
-    relatorio_path = os.path.join(reports_dir, f"{code_muni}_relatorio_qualidade_segmentacao_{ano_base}_vs_{ano_alvo}.txt")
+    relatorio_path = os.path.join(reports_dir, f"{code_muni}_relatorio_qualidade_delta_{ano_base}_vs_{ano_alvo}.txt")
     
     resumo_linhas = [
         "=" * 115,
-        f"RELATÓRIO DE QUALIDADE DA SEGMENTAÇÃO E TRANSIÇÃO FLORESTAL ({ano_base} vs {ano_alvo})",
+        f"RELATÓRIO DE QUALIDADE DA SEGMENTAÇÃO DAS MUDANÇAS (DELTA {ano_base} vs {ano_alvo})",
         f"Município IBGE: {code_muni}",
         "=" * 115,
-        f"Área Permanente (Mantida): {tot_permanente:.2f} ha",
-        f"Área Convertida (Supressão): {tot_supressao:.2f} ha",
+        f"Área Total de Mudança Analisada: {total_mudanca_ha:.2f} ha",
         "-" * 115,
-        f"{'CLASSE':<15} | {'QTD SEGMENTOS':<15} | {'MÉDIA PÍXELS':<15} | {'MÉDIA ÁREA (m²)':<18} | {'MEDIANA HoR':<15} | {'HoR MÍN/MÁX':<20}",
+        f"{'CLASSE (Destino)':<18} | {'QTD SEGMENTOS':<15} | {'MÉDIA PÍXELS':<15} | {'MÉDIA ÁREA (m²)':<18} | {'MEDIANA HoR':<15}",
         "-" * 115
     ]
 
@@ -214,11 +201,9 @@ def main():
             media_px = subset['npixels'].mean()
             media_area = subset['area_m2'].mean()
             med_hor = subset['hor'].median()
-            min_hor = subset['hor'].min()
-            max_hor = subset['hor'].max()
-            linha = f"{cls_name:<15} | {qtd:<15} | {media_px:<15.1f} | {media_area:<18.1f} | {med_hor:<15.2f} | {min_hor:.2f} / {max_hor:.2f}"
+            linha = f"{cls_name:<18} | {qtd:<15} | {media_px:<15.1f} | {media_area:<18.1f} | {med_hor:<15.2f}"
         else:
-            linha = f"{cls_name:<15} | {0:<15} | {0:<15.1f} | {0.0:<18.1f} | {0.0:<15.2f} | 0.00 / 0.00"
+            linha = f"{cls_name:<18} | {0:<15} | {0:<15.1f} | {0.0:<18.1f} | {0.0:<15.2f}"
         resumo_linhas.append(linha)
 
     resumo_linhas.append("=" * 115)
@@ -228,8 +213,8 @@ def main():
     print("\n".join(resumo_linhas))
     print(f"\n[SUCESSO] Relatório salvo em:\n-> {relatorio_path}")
 
-    # 7. Geração do Mapa Geopolítico com Cores Corrigidas (Floresta=Vermelho, Não-Floresta=Azul)
-    print("\nGerando mapa geopolítico global com superpixels coloridos (Floresta = Vermelho, Não-Floresta = Azul)...")
+    # 7. Geração do Mapa Exclusivo da Diferença (Superpixels coloridos: Floresta=Vermelho, Não-Floresta=Azul)
+    print("\nGerando mapa focado estritamente na diferença (Floresta = Vermelho, Não-Floresta = Azul)...")
     mapa_classes = dict(zip(df_metricas['segment_id'], df_metricas['classe']))
 
     rgb_full = np.zeros((3, height, width), dtype=np.uint8)
@@ -249,29 +234,28 @@ def main():
 
         classe = mapa_classes.get(sp_id, 'Floresta')
         
-        # 🎯 Regra de Cores Exata:
-        # Floresta (Permanente) = Vermelho [255, 0, 0]
-        # Não-Floresta (Supressão) = Azul [0, 0, 255]
+        # 🎯 Regra de Cores Solicitada:
+        # Floresta = Vermelho puro [255, 0, 0]
+        # Não-Floresta = Azul puro [0, 0, 255]
         if classe == 'Floresta':
             cor_borda = np.array([255, 0, 0], dtype=np.uint8)
         else:
             cor_borda = np.array([0, 0, 255], dtype=np.uint8)
 
-        # Borda com dilatação morfológica para alta visibilidade no QGIS
         borda_sp = find_boundaries(mask_sp, mode='outer')
         borda_grossa = binary_dilation(borda_sp, iterations=2)
 
         sub_img = img_visual[slc[0], slc[1]]
         sub_img[borda_grossa] = cor_borda
 
-    mapa_saida_path = os.path.join(segmentation_dir, f"{code_muni}_mapa_superpixels_coloridos_{ano_base}_vs_{ano_alvo}.tif")
+    mapa_saida_path = os.path.join(segmentation_dir, f"{code_muni}_mapa_delta_superpixels_coloridos_{ano_base}_vs_{ano_alvo}.tif")
 
     sat_meta.update({"dtype": rasterio.uint8, "count": 3, "photometric": "RGB"})
     with rasterio.open(mapa_saida_path, "w", **sat_meta) as dst:
         for b in range(3):
             dst.write(img_visual[..., b], b + 1)
 
-    print(f"✅ Mapa global salvo em:\n-> {mapa_saida_path}")
+    print(f"✅ Mapa focado na diferença salvo em:\n-> {mapa_saida_path}")
 
 if __name__ == "__main__":
     main()
