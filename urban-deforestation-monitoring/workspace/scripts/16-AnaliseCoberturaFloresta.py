@@ -4,9 +4,9 @@ import numpy as np
 import pandas as pd
 import rasterio
 import geopandas as gpd
-from rasterio.features import rasterize, shapes
-import shapely.geometry
-from skimage.segmentation import slic
+from rasterio.features import rasterize
+from skimage.segmentation import slic, find_boundaries
+from scipy.ndimage import find_objects, binary_dilation
 from dotenv import load_dotenv
 
 def main():
@@ -45,61 +45,63 @@ def main():
         sys.exit(1)
 
     print("=" * 115)
-    print(f"🌲 SCRIPT 16: ANÁLISE DE COBERTURA FLORESTAL E SHAPEFILE DE SUPERPIXELS ({ano_base} vs {ano_alvo})")
+    print(f"🌲 SCRIPT 16 (REFATORADO): ANÁLISE DE FLORESTAS E SUPERPIXELS ({ano_base} vs {ano_alvo})")
     print(f"📍 MUNICÍPIO: {code_muni}")
     print("=" * 115)
 
-    # 1. Carregar classificações e filtrar grandes fragmentos de floresta em ano_base
-    print(f"Carregando base de {ano_base} e filtrando florestas de maior dimensão...")
-    gdf_2023 = gpd.read_file(path_shp_base)
-    gdf_2024 = gpd.read_file(path_shp_alvo)
+    # 1. Carregamento e Reprojecão rigorosa (Lógica inspirada no Script 07)
+    print(f"Carregando e padronizando bases de {ano_base} e {ano_alvo}...")
+    df1 = gpd.read_file(path_shp_base)
+    df2 = gpd.read_file(path_shp_alvo)
 
-    utm_crs = gdf_2023.estimate_utm_crs()
-    gdf_2023 = gdf_2023.to_crs(utm_crs)
-    gdf_2024 = gdf_2024.to_crs(utm_crs)
+    utm_crs = df1.estimate_utm_crs()
+    df1 = df1.to_crs(utm_crs)
+    df2 = df2.to_crs(utm_crs)
 
-    col_cls = 'class_name' if 'class_name' in gdf_2023.columns else 'class_id'
-    
+    # Filtrar apenas geometrias de floresta no ano base
+    col_cls = 'class_name' if 'class_name' in df1.columns else 'class_id'
     if col_cls == 'class_name':
-        floresta_23 = gdf_2023[gdf_2023['class_name'].str.contains('Floresta', case=False, na=False)].copy()
+        floresta_base = df1[df1['class_name'].str.contains('Floresta', case=False, na=False)].copy()
     else:
-        floresta_23 = gdf_2023[gdf_2023['class_id'] == 3].copy()
+        floresta_base = df1[df1['class_id'] == 3].copy()
 
-    floresta_23['area_ha'] = floresta_23.geometry.area / 10000.0
-    area_corte = floresta_23['area_ha'].quantile(0.25)
-    grandes_florestas_23 = floresta_23[floresta_23['area_ha'] >= area_corte]
-    print(f"-> {len(grandes_florestas_23)} grandes fragmentos florestais isolados em {ano_base}.")
+    floresta_base['area_ha'] = floresta_base.geometry.area / 10000.0
+    area_corte = floresta_base['area_ha'].quantile(0.25)
+    grandes_florestas = floresta_base[floresta_base['area_ha'] >= area_corte]
+    print(f"-> {len(grandes_florestas)} grandes fragmentos florestais isolados em {ano_base}.")
 
-    # 2. Projetar sobre a base alvo para checar transições (Permanência vs Supressão)
-    print(f"Cruzando com a base de {ano_alvo} para detectar transições (Floresta mantida vs Virou Não-Floresta)...")
-    cruzamento = gpd.overlay(grandes_florestas_23[['geometry']], gdf_2024, how='intersection', keep_geom_type=True)
+    # 2. Cruzamento Espacial Preciso (Overlay idêntico ao Script 07)
+    print("Executando cruzamento espacial (Overlay) para rastrear transições exatas...")
+    df1_sub = grandes_florestas[['geometry']].copy()
+    df1_sub['cat_ano1'] = 'Floresta'
     
-    if 'class_name' in cruzamento.columns:
-        cruzamento['status_2024'] = cruzamento['class_name'].apply(
-            lambda x: 'Floresta' if 'Floresta' in str(x) else 'Nao_Floresta'
-        )
+    df2_sub = df2[['geometry']].copy()
+    if 'class_name' in df2.columns:
+        df2_sub['cat_ano2'] = df2['class_name'].apply(lambda x: 'Floresta' if 'Floresta' in str(x) else 'Nao_Floresta')
     else:
-        cruzamento['status_2024'] = cruzamento['class_id'].apply(
-            lambda x: 'Floresta' if x == 3 else 'Nao_Floresta'
-        )
+        df2_sub['cat_ano2'] = df2['class_id'].apply(lambda x: 'Floresta' if x == 3 else 'Nao_Floresta')
 
-    cruzamento['area_m2'] = cruzamento.geometry.area
-    tot_permanente = cruzamento[cruzamento['status_2024'] == 'Floresta']['area_m2'].sum() / 10000.0
-    tot_supressao = cruzamento[cruzamento['status_2024'] == 'Nao_Floresta']['area_m2'].sum() / 10000.0
+    overlap = gpd.overlay(df1_sub, df2_sub, how='intersection', keep_geom_type=True)
+    overlap['status_alvo'] = overlap['cat_ano2'] # 'Floresta' (Permanente) ou 'Nao_Floresta' (Supressão)
+    overlap['area_m2'] = overlap.geometry.area
 
-    print(f"📊 Estatísticas Preliminares do Cruzamento:")
+    tot_permanente = overlap[overlap['status_alvo'] == 'Floresta']['area_m2'].sum() / 10000.0
+    tot_supressao = overlap[overlap['status_alvo'] == 'Nao_Floresta']['area_m2'].sum() / 10000.0
+
+    print(f"📊 Estatísticas Validadas de Transição:")
     print(f"   - Permaneceu Floresta ({ano_base} -> {ano_alvo}): {tot_permanente:.2f} ha")
-    print(f"   - Converteu para Não-Floresta (Supressão): {tot_supressao:.2f} ha")
+    print(f"   - Converteu para Não-Floresta / Supressão: {tot_supressao:.2f} ha")
 
-    # 3. Leitura do Raster e Descarte de Áreas com Nuvens
+    # 3. Leitura do Raster e Máscara Anti-Nuvens (Lógica do Script 09)
     print("Processando imagem raster e aplicando filtro anti-nuvem...")
     with rasterio.open(path_sat) as src:
+        sat_meta = src.meta.copy()
+        sat_img = src.read()
         transform = src.transform
         crs = src.crs
-        sat_img = src.read()
         height, width = src.height, src.width
 
-    cruzamento_raster_crs = cruzamento.to_crs(crs)
+    overlap_raster_crs = overlap.to_crs(crs)
 
     if sat_img.shape[0] >= 3:
         r, g, b = sat_img[0], sat_img[1], sat_img[2]
@@ -109,13 +111,13 @@ def main():
     else:
         is_cloud = np.zeros((height, width), dtype=bool)
 
-    shapes_interesse = [(geom, 1) for geom in cruzamento_raster_crs.geometry]
+    shapes_interesse = [(geom, 1) for geom in overlap_raster_crs.geometry]
     mask_interesse = rasterize(shapes_interesse, out_shape=(height, width), transform=transform, fill=0, dtype=np.uint8)
 
     mask_valida = (mask_interesse == 1) & (~is_cloud)
 
-    # 4. Segmentação sobre a região de interesse
-    print("Executando segmentação por superpixels (SLIC) nas áreas validadas...")
+    # 4. Segmentação por Superpixels (SLIC)
+    print("Executando segmentação por superpixels (SLIC) nas zonas validadas...")
     rgb_norm = np.zeros((3, height, width), dtype=np.float32)
     for b in range(min(3, sat_img.shape[0])):
         band = sat_img[b].astype(np.float32)
@@ -135,19 +137,17 @@ def main():
     )
     segments[~mask_valida] = 0
 
-    # 5. Avaliação de Qualidade e Atribuição de Classes aos Superpixels
-    print("Calculando métricas e mapeando classes por superpixel...")
-    shapes_classe_2024 = []
-    for _, row in cruzamento_raster_crs.iterrows():
-        val_cls = 1 if row['status_2024'] == 'Floresta' else 2
-        shapes_classe_2024.append((row.geometry, val_cls))
+    # 5. Avaliação de Qualidade (HoR, Tamanho e Contagem por Classe)
+    print("Calculando métricas de HoR e contagem de segmentos...")
+    shapes_classe_alvo = []
+    for _, row in overlap_raster_crs.iterrows():
+        val_cls = 1 if row['status_alvo'] == 'Floresta' else 2
+        shapes_classe_alvo.append((row.geometry, val_cls))
 
-    raster_classe_2024 = rasterize(
-        shapes_classe_2024, out_shape=(height, width), transform=transform, fill=0, dtype=np.uint8
+    raster_classe_alvo = rasterize(
+        shapes_classe_alvo, out_shape=(height, width), transform=transform, fill=0, dtype=np.uint8
     )
 
-    # Calculando estatísticas por superpixel usando scipy.ndimage
-    from scipy.ndimage import find_objects
     ids_unicos = np.unique(segments)
     ids_unicos = ids_unicos[ids_unicos > 0]
     slices = find_objects(segments)
@@ -160,7 +160,7 @@ def main():
         if slc is None: continue
 
         mask_sp = (segments[slc] == sp_id)
-        classe_pixels = raster_classe_2024[slc][mask_sp]
+        classe_pixels = raster_classe_alvo[slc][mask_sp]
         classe_pixels = classe_pixels[classe_pixels > 0]
         
         if len(classe_pixels) == 0:
@@ -180,10 +180,10 @@ def main():
         hor = max_pixels / npixels
 
         metricas_segmentos.append({
-            'segment_id': int(sp_id),
-            'npixels': int(npixels),
-            'area_m2': float(npixels * pixel_area_m2),
-            'hor': float(hor),
+            'segment_id': sp_id,
+            'npixels': npixels,
+            'area_m2': npixels * pixel_area_m2,
+            'hor': hor,
             'classe': cls_majoritaria
         })
 
@@ -193,20 +193,19 @@ def main():
         sys.exit(0)
 
     # 6. Geração do Relatório Textual
-    relatorio_nome = f"{code_muni}_relatorio_qualidade_segmentacao_{ano_base}_vs_{ano_alvo}.txt"
-    relatorio_path = os.path.join(reports_dir, relatorio_nome)
+    relatorio_path = os.path.join(reports_dir, f"{code_muni}_relatorio_qualidade_segmentacao_{ano_base}_vs_{ano_alvo}.txt")
     
-    resumo_linhas = []
-    resumo_linhas.append("=" * 115)
-    resumo_linhas.append(f"RELATÓRIO DE QUALIDADE DA SEGMENTAÇÃO E TRANSIÇÃO FLORESTAL ({ano_base} vs {ano_alvo})")
-    resumo_linhas.append(f"Município IBGE: {code_muni}")
-    resumo_linhas.append("=" * 115)
-    resumo_linhas.append(f"Área Total de Grandes Florestas ({ano_base}): {floresta_23['area_ha'].sum():.2f} ha")
-    resumo_linhas.append(f"Área Permanente (Mantida): {tot_permanente:.2f} ha")
-    resumo_linhas.append(f"Área Convertida (Supressão / Desmatamento): {tot_supressao:.2f} ha")
-    resumo_linhas.append("-" * 115)
-    resumo_linhas.append(f"{'CLASSE':<15} | {'QTD SEGMENTOS':<15} | {'MÉDIA PÍXELS':<15} | {'MÉDIA ÁREA (m²)':<18} | {'MEDIANA HoR':<15} | {'HoR MÍN/MÁX':<20}")
-    resumo_linhas.append("-" * 115)
+    resumo_linhas = [
+        "=" * 115,
+        f"RELATÓRIO DE QUALIDADE DA SEGMENTAÇÃO E TRANSIÇÃO FLORESTAL ({ano_base} vs {ano_alvo})",
+        f"Município IBGE: {code_muni}",
+        "=" * 115,
+        f"Área Permanente (Mantida): {tot_permanente:.2f} ha",
+        f"Área Convertida (Supressão): {tot_supressao:.2f} ha",
+        "-" * 115,
+        f"{'CLASSE':<15} | {'QTD SEGMENTOS':<15} | {'MÉDIA PÍXELS':<15} | {'MÉDIA ÁREA (m²)':<18} | {'MEDIANA HoR':<15} | {'HoR MÍN/MÁX':<20}",
+        "-" * 115
+    ]
 
     for cls_name in ['Floresta', 'Nao_Floresta']:
         subset = df_metricas[df_metricas['classe'] == cls_name]
@@ -223,42 +222,56 @@ def main():
         resumo_linhas.append(linha)
 
     resumo_linhas.append("=" * 115)
-
     with open(relatorio_path, 'w', encoding='utf-8') as f:
         f.write("\n".join(resumo_linhas))
 
     print("\n".join(resumo_linhas))
-    print(f"\n[SUCESSO] Relatório analítico salvo em:\n-> {relatorio_path}")
+    print(f"\n[SUCESSO] Relatório salvo em:\n-> {relatorio_path}")
 
-    # 7. Conversão dos Superpixels para Shapefile (.shp) Vetorial
-    print("\nConvertendo superpixels em polígonos vetoriais (.shp)...")
+    # 7. Geração do Mapa Geopolítico com Cores Corrigidas (Floresta=Vermelho, Não-Floresta=Azul)
+    print("\nGerando mapa geopolítico global com superpixels coloridos (Floresta = Vermelho, Não-Floresta = Azul)...")
     mapa_classes = dict(zip(df_metricas['segment_id'], df_metricas['classe']))
-    mapa_npixels = dict(zip(df_metricas['segment_id'], df_metricas['npixels']))
-    mapa_area = dict(zip(df_metricas['segment_id'], df_metricas['area_m2']))
-    mapa_hor = dict(zip(df_metricas['segment_id'], df_metricas['hor']))
 
-    records = []
-    # Extrai polígonos raster diretamente usando rasterio.features.shapes
-    for geom, val in shapes(segments.astype(np.int32), transform=transform):
-        sp_id = int(val)
-        if sp_id == 0:
-            continue
-        poly = shapely.geometry.shape(geom)
-        records.append({
-            'geometry': poly,
-            'segment_id': sp_id,
-            'classe': mapa_classes.get(sp_id, 'Desconhecido'),
-            'npixels': mapa_npixels.get(sp_id, 0),
-            'area_m2': mapa_area.get(sp_id, 0.0),
-            'hor': mapa_hor.get(sp_id, 0.0)
-        })
+    rgb_full = np.zeros((3, height, width), dtype=np.uint8)
+    for b in range(min(3, sat_img.shape[0])):
+        band = sat_img[b].astype(np.float32)
+        p2, p98 = np.percentile(band[band > 0], (2, 98)) if np.any(band > 0) else (0, 1)
+        rgb_full[b] = np.clip((band - p2) / (p98 - p2) * 255.0, 0, 255).astype(np.uint8)
 
-    gdf_superpixels = gpd.GeoDataFrame(records, crs=crs)
-    shp_saida_nome = f"{code_muni}_superpixels_{ano_base}_vs_{ano_alvo}.shp"
-    shp_saida_path = os.path.join(segmentation_dir, shp_saida_nome)
+    img_visual = np.moveaxis(rgb_full, 0, -1).copy()
 
-    gdf_superpixels.to_file(shp_saida_path)
-    print(f"✅ Shapefile de superpixels salvo com sucesso em:\n-> {shp_saida_path}")
+    for sp_id in ids_unicos:
+        slc = slices[sp_id - 1]
+        if slc is None: continue
+        
+        mask_sp = (segments[slc] == sp_id)
+        if not np.any(mask_sp): continue
+
+        classe = mapa_classes.get(sp_id, 'Floresta')
+        
+        # 🎯 Regra de Cores Exata:
+        # Floresta (Permanente) = Vermelho [255, 0, 0]
+        # Não-Floresta (Supressão) = Azul [0, 0, 255]
+        if classe == 'Floresta':
+            cor_borda = np.array([255, 0, 0], dtype=np.uint8)
+        else:
+            cor_borda = np.array([0, 0, 255], dtype=np.uint8)
+
+        # Borda com dilatação morfológica para alta visibilidade no QGIS
+        borda_sp = find_boundaries(mask_sp, mode='outer')
+        borda_grossa = binary_dilation(borda_sp, iterations=2)
+
+        sub_img = img_visual[slc[0], slc[1]]
+        sub_img[borda_grossa] = cor_borda
+
+    mapa_saida_path = os.path.join(segmentation_dir, f"{code_muni}_mapa_superpixels_coloridos_{ano_base}_vs_{ano_alvo}.tif")
+
+    sat_meta.update({"dtype": rasterio.uint8, "count": 3, "photometric": "RGB"})
+    with rasterio.open(mapa_saida_path, "w", **sat_meta) as dst:
+        for b in range(3):
+            dst.write(img_visual[..., b], b + 1)
+
+    print(f"✅ Mapa global salvo em:\n-> {mapa_saida_path}")
 
 if __name__ == "__main__":
     main()
