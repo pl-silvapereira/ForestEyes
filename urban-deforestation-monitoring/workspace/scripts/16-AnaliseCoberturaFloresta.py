@@ -5,15 +5,15 @@ import pandas as pd
 import rasterio
 import geopandas as gpd
 from rasterio.features import rasterize
-from skimage.segmentation import slic
+from skimage.segmentation import slic, find_boundaries
 from scipy.ndimage import find_objects
 from dotenv import load_dotenv
 
 def main():
     if len(sys.argv) < 4:
         print("❌ Erro: Parâmetros insuficientes.")
-        print("Uso correto: python 16-AnaliseCoberturaFloresta.py <code_muni> <ano_base> <ano_alvo>")
-        print("Exemplo: python 16-AnaliseCoberturaFloresta.py 3549904 2023 2024")
+        print("Uso correto: python 16-AnaliseCoberturaFloresta2023_2024.py <code_muni> <ano_base> <ano_alvo>")
+        print("Exemplo: python 16-AnaliseCoberturaFloresta2023_2024.py 3549904 2023 2024")
         sys.exit(1)
 
     code_muni = int(sys.argv[1])
@@ -29,7 +29,9 @@ def main():
     # Diretórios de entrada e saída
     class_dir = os.path.join(project_root, "data", "output", "classification")
     reports_dir = os.path.join(project_root, "reports")
+    segmentation_dir = os.path.join(project_root, "data", "output", "mask", "segmentation")
     os.makedirs(reports_dir, exist_ok=True)
+    os.makedirs(segmentation_dir, exist_ok=True)
 
     path_shp_base = os.path.join(class_dir, ano_base, f"{code_muni}_Classificado_ForestEyes_{ano_base}.shp")
     path_shp_alvo = os.path.join(class_dir, ano_alvo, f"{code_muni}_Classificado_ForestEyes_{ano_alvo}.shp")
@@ -43,11 +45,11 @@ def main():
         sys.exit(1)
 
     print("=" * 115)
-    print(f"🌲 SCRIPT 16: ANÁLISE DE COBERTURA FLORESTAL (PERSISTÊNCIA E SUPRESSÃO - {ano_base} vs {ano_alvo})")
+    print(f"🌲 SCRIPT 16: ANÁLISE DE COBERTURA FLORESTAL E MAPA DE SUPERPIXELS ({ano_base} vs {ano_alvo})")
     print(f"📍 MUNICÍPIO: {code_muni}")
     print("=" * 115)
 
-    # 1. Carregar classificações e filtrar grandes fragmentos de floresta em 2023
+    # 1. Carregar classificações e filtrar grandes fragmentos de floresta em ano_base
     print(f"Carregando base de {ano_base} e filtrando florestas de maior dimensão...")
     gdf_2023 = gpd.read_file(path_shp_base)
     gdf_2024 = gpd.read_file(path_shp_alvo)
@@ -69,7 +71,7 @@ def main():
     grandes_florestas_23 = floresta_23[floresta_23['area_ha'] >= area_corte]
     print(f"-> {len(grandes_florestas_23)} grandes fragmentos florestais isolados em {ano_base}.")
 
-    # 3. Projetar sobre a base de 2024 para checar transições (Permanência vs Supressão)
+    # 3. Projetar sobre a base alvo para checar transições (Permanência vs Supressão)
     print(f"Cruzando com a base de {ano_alvo} para detectar transições (Floresta mantida vs Virou Não-Floresta)...")
     cruzamento = gpd.overlay(grandes_florestas_23[['geometry']], gdf_2024, how='intersection', keep_geom_type=True)
     
@@ -90,8 +92,8 @@ def main():
     print(f"   - Permaneceu Floresta ({ano_base} -> {ano_alvo}): {tot_permanente:.2f} ha")
     print(f"   - Converteu para Não-Floresta (Supressão): {tot_supressao:.2f} ha")
 
-    # 4. Leitura do Raster e Descarte de Áreas com Nuvens (2024)
-    print("Processando imagem raster de 2024 e aplicando filtro anti-nuvem...")
+    # 4. Leitura do Raster e Descarte de Áreas com Nuvens
+    print("Processando imagem raster e aplicando filtro anti-nuvem...")
     with rasterio.open(path_sat) as src:
         sat_meta = src.meta.copy()
         sat_img = src.read()
@@ -112,7 +114,6 @@ def main():
     shapes_interesse = [(geom, 1) for geom in cruzamento_raster_crs.geometry]
     mask_interesse = rasterize(shapes_interesse, out_shape=(height, width), transform=transform, fill=0, dtype=np.uint8)
 
-    # Máscara final descarta nuvens automaticamente
     mask_valida = (mask_interesse == 1) & (~is_cloud)
 
     # 5. Segmentação sobre a região de interesse
@@ -192,7 +193,7 @@ def main():
         print("⚠️ Nenhum segmento válido gerado.")
         sys.exit(0)
 
-    # 7. Geração do Relatório Textual com código do município e período no nome
+    # 7. Geração do Relatório Textual
     relatorio_nome = f"{code_muni}_relatorio_qualidade_segmentacao_{ano_base}_vs_{ano_alvo}.txt"
     relatorio_path = os.path.join(reports_dir, relatorio_nome)
     
@@ -229,6 +230,45 @@ def main():
 
     print("\n".join(resumo_linhas))
     print(f"\n[SUCESSO] Relatório analítico salvo em:\n-> {relatorio_path}")
+
+    # 8. Geração da Imagem Geopolítica Global com Superpixels Coloridos (Floresta=Vermelho, Não-Floresta=Azul)
+    print("\nGerando imagem geopolítica global com superpixels coloridos (Floresta = Vermelho, Não-Floresta = Azul)...")[cite: 21]
+    mapa_classes = dict(zip(df_metricas['segment_id'], df_metricas['classe']))
+
+    rgb_full = np.zeros((3, height, width), dtype=np.uint8)
+    for b in range(min(3, sat_img.shape[0])):
+        band = sat_img[b].astype(np.float32)
+        p2, p98 = np.percentile(band[band > 0], (2, 98)) if np.any(band > 0) else (0, 1)
+        rgb_full[b] = np.clip((band - p2) / (p98 - p2) * 255.0, 0, 255).astype(np.uint8)
+
+    img_visual = np.moveaxis(rgb_full, 0, -1).copy()
+
+    for sp_id in ids_unicos:
+        slc = slices[sp_id - 1]
+        if slc is None: continue
+        
+        mask_sp = (segments[slc] == sp_id)
+        if not np.any(mask_sp): continue
+
+        classe = mapa_classes.get(sp_id, 'Floresta')
+        
+        # 🎯 Regra de cores solicitada:
+        # Floresta = Vermelho [255, 0, 0] | Não-Floresta = Azul [0, 0, 255][cite: 21]
+        cor_borda = [255, 0, 0] if classe == 'Floresta' else [0, 0, 255][cite: 21]
+
+        borda_sp = find_boundaries(mask_sp, mode='outer')
+        sub_img = img_visual[slc[0], slc[1]]
+        sub_img[borda_sp] = cor_borda
+
+    mapa_saida_nome = f"{code_muni}_mapa_superpixels_coloridos_{ano_base}_vs_{ano_alvo}.tif"
+    mapa_saida_path = os.path.join(segmentation_dir, mapa_saida_nome)
+
+    sat_meta.update({"dtype": rasterio.uint8, "count": 3, "photometric": "RGB"})
+    with rasterio.open(mapa_saida_path, "w", **sat_meta) as dst:
+        for b in range(3):
+            dst.write(img_visual[..., b], b + 1)
+
+    print(f"✅ Mapa global com superpixels coloridos salvo em:\n-> {mapa_saida_path}")
 
 if __name__ == "__main__":
     main()
