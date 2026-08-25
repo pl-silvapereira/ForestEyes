@@ -25,7 +25,7 @@ def main():
 
     if not os.path.exists(path_sat):
         # Tenta buscar diretamente pelo caminho absoluto caso o .env não esteja configurado
-        path_sat = "/content/drive/MyDrive/Mestrado/04-Projeto ForestEyes/ForestEyes/urban-deforestation-monitoring/workspace/data/output/pansharpening/geopolitic-RGBN/2024/CBERS4A_WPM20214220240930_TRUE_COLOR_2024.tif"
+        path_sat = "/content/drive/MyDrive/Mestrado/04-Projeto ForestEyes/ForestEyes/urban-deforestation-monitoring/workspace/data/output/pansharpening/geopolitic-RGBN/2024/3549904_2024_CBERS_TRUE_COLOR_CLIPPED.tif"
         if not os.path.exists(path_sat):
             print(f"[ERRO CRÍTICO] Imagem não encontrada em:\n-> {path_sat}")
             sys.exit(1)
