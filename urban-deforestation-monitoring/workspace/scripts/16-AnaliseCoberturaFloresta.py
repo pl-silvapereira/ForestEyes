@@ -49,7 +49,7 @@ def main():
     print(f"📍 MUNICÍPIO: {code_muni}")
     print("=" * 115)
 
-    # 1. Carregar classificações e filtrar grandes fragmentos de floresta em ano_base (Passo 2)
+    # 1. Carregar classificações e filtrar grandes fragmentos de floresta em ano_base
     print(f"Carregando base de {ano_base} e filtrando florestas de maior dimensão...")
     gdf_2023 = gpd.read_file(path_shp_base)
     gdf_2024 = gpd.read_file(path_shp_alvo)
@@ -71,8 +71,8 @@ def main():
     grandes_florestas_23 = floresta_23[floresta_23['area_ha'] >= area_corte]
     print(f"-> {len(grandes_florestas_23)} grandes fragmentos florestais isolados em {ano_base}.")
 
-    # 2. Projetar sobre a base alvo e verificar transições (Passo 2.2)
-    print(f"Cruzando com a base de {ano_alvo} para detectar transições (Permanência vs Supressão)...")
+    # 2. Projetar sobre a base alvo para checar transições (Permanência vs Supressão)
+    print(f"Cruzando com a base de {ano_alvo} para detectar transições (Floresta mantida vs Virou Não-Floresta)...")
     cruzamento = gpd.overlay(grandes_florestas_23[['geometry']], gdf_2024, how='intersection', keep_geom_type=True)
     
     if 'class_name' in cruzamento.columns:
@@ -92,7 +92,7 @@ def main():
     print(f"   - Permaneceu Floresta ({ano_base} -> {ano_alvo}): {tot_permanente:.2f} ha")
     print(f"   - Converteu para Não-Floresta (Supressão): {tot_supressao:.2f} ha")
 
-    # 3. Leitura do Raster e Descarte de Áreas com Nuvens (Passo 2.1)
+    # 3. Leitura do Raster e Descarte de Áreas com Nuvens
     print("Processando imagem raster e aplicando filtro anti-nuvem...")
     with rasterio.open(path_sat) as src:
         sat_meta = src.meta.copy()
@@ -116,7 +116,7 @@ def main():
 
     mask_valida = (mask_interesse == 1) & (~is_cloud)
 
-    # 4. Segmentação sobre a região de interesse (Passo 2.3)
+    # 4. Segmentação sobre a região de interesse
     print("Executando segmentação por superpixels (SLIC) nas áreas validadas...")
     rgb_norm = np.zeros((3, height, width), dtype=np.float32)
     for b in range(min(3, sat_img.shape[0])):
@@ -137,7 +137,7 @@ def main():
     )
     segments[~mask_valida] = 0
 
-    # 5. Avaliação de Qualidade: HoR, Tamanho e Contagem por Classe (Passo 2.3)
+    # 5. Avaliação de Qualidade (HoR, Tamanho e Contagem por Classe)
     print("Calculando métricas de HoR, tamanho e contagem de segmentos...")
     shapes_classe_2024 = []
     for _, row in cruzamento_raster_crs.iterrows():
@@ -231,7 +231,7 @@ def main():
     print("\n".join(resumo_linhas))
     print(f"\n[SUCESSO] Relatório analítico salvo em:\n-> {relatorio_path}")
 
-    # 7. Geração do Mapa Geopolítico Global com Superpixels Coloridos (Floresta = Vermelho, Não-Floresta = Azul)
+    # 7. Geração do Mapa Geopolítico Global com Superpixels Coloridos Corretamente para o QGIS (Floresta=Vermelho, Não-Floresta=Azul)
     print("\nGerando mapa geopolítico global com superpixels coloridos (Floresta = Vermelho, Não-Floresta = Azul)...")
     mapa_classes = dict(zip(df_metricas['segment_id'], df_metricas['classe']))
 
@@ -252,9 +252,13 @@ def main():
 
         classe = mapa_classes.get(sp_id, 'Floresta')
         
-        # 🎯 Regra de cores solicitada:
-        # Floresta = Vermelho [255, 0, 0] | Não-Floresta = Azul [0, 0, 255]
-        cor_borda = [255, 0, 0] if classe == 'Floresta' else [0, 0, 255]
+        # Definição exata das cores por canal RGB para exibição correta no QGIS:
+        # Floresta = Vermelho puro [255, 0, 0]
+        # Não-Floresta = Azul puro [0, 0, 255]
+        if classe == 'Floresta':
+            cor_borda = np.array([255, 0, 0], dtype=np.uint8)
+        else:
+            cor_borda = np.array([0, 0, 255], dtype=np.uint8)
 
         borda_sp = find_boundaries(mask_sp, mode='outer')
         sub_img = img_visual[slc[0], slc[1]]
