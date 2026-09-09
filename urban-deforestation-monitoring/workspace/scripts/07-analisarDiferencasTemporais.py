@@ -88,7 +88,7 @@ def main():
 
         detalhes_list = []
         
-        # Caso 1: Perda líquida (Mostra para onde foi a área - Destinos)
+        # Caso 1: Perda líquida (Mostra para onde foi a área com prefixo "Para:" e valor negativo)
         if dif < -0.01: 
             perdas_reais = transicoes[(transicoes['cat_ano1'] == cat) & (transicoes['cat_ano2'] != cat)]
             total_perda_bruta = perdas_reais['area_ha'].sum()
@@ -99,10 +99,10 @@ def main():
                     dest_cat = row['cat_ano2']
                     area_ajustada = row['area_ha'] * fator
                     if area_ajustada > 0.01:
-                        detalhes_list.append((dest_cat, area_ajustada))
-                detalhes_list = sorted(detalhes_list, key=lambda x: x[1], reverse=True)
+                        detalhes_list.append((f"Para: {dest_cat}", -area_ajustada))
+                detalhes_list = sorted(detalhes_list, key=lambda x: abs(x[1]), reverse=True)
 
-        # Caso 2: Ganho líquido (Mostra de onde veio a área - Origens)
+        # Caso 2: Ganho líquido (Mostra de onde veio a área com prefixo "De:" e valor positivo)
         elif dif > 0.01:
             ganhos_reais = transicoes[(transicoes['cat_ano1'] != cat) & (transicoes['cat_ano2'] == cat)]
             total_ganho_bruto = ganhos_reais['area_ha'].sum()
@@ -114,7 +114,7 @@ def main():
                     area_ajustada = row['area_ha'] * fator
                     if area_ajustada > 0.01:
                         detalhes_list.append((f"De: {orig_cat}", area_ajustada))
-                detalhes_list = sorted(detalhes_list, key=lambda x: x[1], reverse=True)
+                detalhes_list = sorted(detalhes_list, key=lambda x: abs(x[1]), reverse=True)
 
         if not detalhes_list:
             linha = f"{cat:<32} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+10.2f} | {'-':<35} | {'-':>10}"
