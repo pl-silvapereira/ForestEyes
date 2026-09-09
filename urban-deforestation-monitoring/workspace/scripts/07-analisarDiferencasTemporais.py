@@ -43,7 +43,7 @@ def main():
         sys.exit(1)
 
     print("=" * 135)
-    print(f"📊 GERANDO RELATÓRIO DETALHADO DE TRANSIÇÕES (PERDAS E GANHOS)")
+    print(f"📊 GERANDO RELATÓRIO DETALHADO DE TRANSIÇÕES (BALANÇO BRUTO E LÍQUIDO)")
     print(f"📍 MUNICÍPIO: {nome_cidade} - {uf} (IBGE: {code_muni}) | PERÍODO: {ano_1} vs {ano_2}")
     print("=" * 135)
 
@@ -73,11 +73,11 @@ def main():
 
     linhas_relatorio = []
     linhas_relatorio.append("=" * 135)
-    linhas_relatorio.append(f" RELATÓRIO DETALHADO DE TRANSIÇÕES DE USO DO SOLO (PERDAS E GANHOS)")
+    linhas_relatorio.append(f" RELATÓRIO DETALHADO DE TRANSIÇÕES DE USO DO SOLO (GANHOS E PERDAS BRUTAS)")
     linhas_relatorio.append(f" MUNICÍPIO: {nome_cidade} - {uf} (IBGE: {code_muni}) | PERÍODO: {ano_1} vs {ano_2}")
     linhas_relatorio.append("=" * 135)
     
-    header = f"{'CATEGORIA':<32} | {ano_1 + ' (ha)':<12} | {ano_2 + ' (ha)':<12} | {'DIFERENÇA':<10} | {'DESTINO (Perda) / ORIGEM (Ganho)':<35} | {'ÁREA (ha)':<10}"
+    header = f"{'CATEGORIA':<32} | {ano_1 + ' (ha)':<12} | {ano_2 + ' (ha)':<12} | {'DIFERENÇA':<10} | {'FLUXO (De: Ganho / Para: Perda)':<35} | {'ÁREA (ha)':<10}"
     linhas_relatorio.append(header)
     linhas_relatorio.append("-" * 135)
 
@@ -88,33 +88,24 @@ def main():
 
         detalhes_list = []
         
-        # Caso 1: Perda líquida (Mostra para onde foi a área com prefixo "Para:" e valor negativo)
-        if dif < -0.01: 
-            perdas_reais = transicoes[(transicoes['cat_ano1'] == cat) & (transicoes['cat_ano2'] != cat)]
-            total_perda_bruta = perdas_reais['area_ha'].sum()
+        # 1. Perdas (Para onde a categoria perdeu área) -> Valores negativos
+        perdas_reais = transicoes[(transicoes['cat_ano1'] == cat) & (transicoes['cat_ano2'] != cat)]
+        for _, row in perdas_reais.iterrows():
+            dest_cat = row['cat_ano2']
+            area = row['area_ha']
+            if area > 0.01:
+                detalhes_list.append((f"Para: {dest_cat}", -area))
 
-            if total_perda_bruta > 0:
-                fator = abs(dif) / total_perda_bruta
-                for _, row in perdas_reais.iterrows():
-                    dest_cat = row['cat_ano2']
-                    area_ajustada = row['area_ha'] * fator
-                    if area_ajustada > 0.01:
-                        detalhes_list.append((f"Para: {dest_cat}", -area_ajustada))
-                detalhes_list = sorted(detalhes_list, key=lambda x: abs(x[1]), reverse=True)
+        # 2. Ganhos (De onde a categoria recebeu área) -> Valores positivos
+        ganhos_reais = transicoes[(transicoes['cat_ano1'] != cat) & (transicoes['cat_ano2'] == cat)]
+        for _, row in ganhos_reais.iterrows():
+            orig_cat = row['cat_ano1']
+            area = row['area_ha']
+            if area > 0.01:
+                detalhes_list.append((f"De: {orig_cat}", area))
 
-        # Caso 2: Ganho líquido (Mostra de onde veio a área com prefixo "De:" e valor positivo)
-        elif dif > 0.01:
-            ganhos_reais = transicoes[(transicoes['cat_ano1'] != cat) & (transicoes['cat_ano2'] == cat)]
-            total_ganho_bruto = ganhos_reais['area_ha'].sum()
-
-            if total_ganho_bruto > 0:
-                fator = abs(dif) / total_ganho_bruto
-                for _, row in ganhos_reais.iterrows():
-                    orig_cat = row['cat_ano1']
-                    area_ajustada = row['area_ha'] * fator
-                    if area_ajustada > 0.01:
-                        detalhes_list.append((f"De: {orig_cat}", area_ajustada))
-                detalhes_list = sorted(detalhes_list, key=lambda x: abs(x[1]), reverse=True)
+        # Ordenar os fluxos pelo valor absoluto (maiores transições primeiro)
+        detalhes_list = sorted(detalhes_list, key=lambda x: abs(x[1]), reverse=True)
 
         if not detalhes_list:
             linha = f"{cat:<32} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+10.2f} | {'-':<35} | {'-':>10}"
