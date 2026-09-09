@@ -43,7 +43,7 @@ def main():
         sys.exit(1)
 
     print("=" * 135)
-    print(f"📊 GERANDO RELATÓRIO DETALHADO DE TRANSIÇÕES (BALANÇO BRUTO E LÍQUIDO)")
+    print(f"📊 GERANDO RELATÓRIO DETALHADO DE TRANSIÇÕES (BALANÇO COMPLETO POR CLASSE)")
     print(f"📍 MUNICÍPIO: {nome_cidade} - {uf} (IBGE: {code_muni}) | PERÍODO: {ano_1} vs {ano_2}")
     print("=" * 135)
 
@@ -73,7 +73,7 @@ def main():
 
     linhas_relatorio = []
     linhas_relatorio.append("=" * 135)
-    linhas_relatorio.append(f" RELATÓRIO DETALHADO DE TRANSIÇÕES DE USO DO SOLO (GANHOS E PERDAS BRUTAS)")
+    linhas_relatorio.append(f" RELATÓRIO DETALHADO DE TRANSIÇÕES DE USO DO SOLO (BALANÇO COMPLETO POR CLASSE)")
     linhas_relatorio.append(f" MUNICÍPIO: {nome_cidade} - {uf} (IBGE: {code_muni}) | PERÍODO: {ano_1} vs {ano_2}")
     linhas_relatorio.append("=" * 135)
     
@@ -88,24 +88,28 @@ def main():
 
         detalhes_list = []
         
-        # 1. Perdas (Para onde a categoria perdeu área) -> Valores negativos
-        perdas_reais = transicoes[(transicoes['cat_ano1'] == cat) & (transicoes['cat_ano2'] != cat)]
-        for _, row in perdas_reais.iterrows():
-            dest_cat = row['cat_ano2']
-            area = row['area_ha']
-            if area > 0.01:
-                detalhes_list.append((f"Para: {dest_cat}", -area))
+        # Para cada categoria, listar TODAS as outras classes explicitamente (Ganho, Perda ou 0)
+        for other_cat in todas_categorias:
+            if other_cat == cat:
+                continue
+            
+            # Ganhos vindos de other_cat para cat -> Positivo
+            ganho_row = transicoes[(transicoes['cat_ano1'] == other_cat) & (transicoes['cat_ano2'] == cat)]
+            area_ganho = ganho_row['area_ha'].values[0] if not ganho_row.empty else 0.0
 
-        # 2. Ganhos (De onde a categoria recebeu área) -> Valores positivos
-        ganhos_reais = transicoes[(transicoes['cat_ano1'] != cat) & (transicoes['cat_ano2'] == cat)]
-        for _, row in ganhos_reais.iterrows():
-            orig_cat = row['cat_ano1']
-            area = row['area_ha']
-            if area > 0.01:
-                detalhes_list.append((f"De: {orig_cat}", area))
+            # Perdas de cat indo para other_cat -> Negativo
+            perda_row = transicoes[(transicoes['cat_ano1'] == cat) & (transicoes['cat_ano2'] == other_cat)]
+            area_perda = perda_row['area_ha'].values[0] if not perda_row.empty else 0.0
 
-        # Ordenar os fluxos pelo valor absoluto (maiores transições primeiro)
-        detalhes_list = sorted(detalhes_list, key=lambda x: abs(x[1]), reverse=True)
+            if area_ganho > 0.001:
+                detalhes_list.append((f"De: {other_cat}", area_ganho))
+            if area_perda > 0.001:
+                detalhes_list.append((f"Para: {other_cat}", -area_perda))
+            if area_ganho <= 0.001 and area_perda <= 0.001:
+                detalhes_list.append((f"De/Para: {other_cat}", 0.00))
+
+        # Ordenar: maiores valores absolutos primeiro, valores zerados por último
+        detalhes_list = sorted(detalhes_list, key=lambda x: (abs(x[1]) > 0.001, abs(x[1])), reverse=True)
 
         if not detalhes_list:
             linha = f"{cat:<32} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+10.2f} | {'-':<35} | {'-':>10}"
