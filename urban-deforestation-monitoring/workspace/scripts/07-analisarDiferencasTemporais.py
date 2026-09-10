@@ -42,10 +42,10 @@ def main():
         print(f"[ERRO CRÍTICO] Shapefiles não encontrados para {ano_1} e/ou {ano_2}.")
         sys.exit(1)
 
-    print("=" * 135)
+    print("=" * 142)
     print(f"📊 GERANDO RELATÓRIO DETALHADO DE TRANSIÇÕES (SALDO LÍQUIDO POR CLASSE)")
     print(f"📍 MUNICÍPIO: {nome_cidade} - {uf} (IBGE: {code_muni}) | PERÍODO: {ano_1} vs {ano_2}")
-    print("=" * 135)
+    print("=" * 142)
 
     df1 = gpd.read_file(path_shp_1)
     df2 = gpd.read_file(path_shp_2)
@@ -72,14 +72,14 @@ def main():
     transicoes = overlap.groupby(['cat_ano1', 'cat_ano2'])['area_ha'].sum().reset_index()
 
     linhas_relatorio = []
-    linhas_relatorio.append("=" * 135)
+    linhas_relatorio.append("=" * 142)
     linhas_relatorio.append(f" RELATÓRIO DETALHADO DE TRANSIÇÕES DE USO DO SOLO (SALDO LÍQUIDO POR CLASSE)")
     linhas_relatorio.append(f" MUNICÍPIO: {nome_cidade} - {uf} (IBGE: {code_muni}) | PERÍODO: {ano_1} vs {ano_2}")
-    linhas_relatorio.append("=" * 135)
+    linhas_relatorio.append("=" * 142)
     
-    header = f"{'CATEGORIA':<32} | {ano_1 + ' (ha)':<12} | {ano_2 + ' (ha)':<12} | {'DIFERENÇA':<10} | {'FLUXO (De: Ganho / Para: Perda)':<35} | {'ÁREA (ha)':<10}"
+    header = f"{'CATEGORIA':<32} | {ano_1 + ' (ha)':<12} | {ano_2 + ' (ha)':<12} | {'DIFERENÇA':<10} | {'FLUXO (De: Ganho / Para: Perda)':<42} | {'ÁREA (ha)':<10}"
     linhas_relatorio.append(header)
-    linhas_relatorio.append("-" * 135)
+    linhas_relatorio.append("-" * 142)
 
     for cat in todas_categorias:
         val_1 = totais_1.get(cat, 0.0)
@@ -114,21 +114,21 @@ def main():
         detalhes_list = sorted(detalhes_list, key=lambda x: (abs(x[1]) > 0.001, abs(x[1])), reverse=True)
 
         if not detalhes_list:
-            linha = f"{cat:<32} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+10.2f} | {'-':<35} | {'-':>10}"
+            linha = f"{cat:<32} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+10.2f} | {'-':<42} | {'-':>10}"
             linhas_relatorio.append(linha)
         else:
             primeira_linha = True
             for item_cat, item_area in detalhes_list:
                 str_area = f"{item_area:>+10.2f}"
                 if primeira_linha:
-                    linha = f"{cat:<32} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+10.2f} | {item_cat:<35} | {str_area}"
+                    linha = f"{cat:<32} | {val_1:>12.2f} | {val_2:>12.2f} | {dif:>+10.2f} | {item_cat:<42} | {str_area}"
                     primeira_linha = False
                 else:
-                    linha = f"{'':<32} | {'':<12} | {'':<12} | {'':<10} | {item_cat:<35} | {str_area}"
+                    linha = f"{'':<32} | {'':<12} | {'':<12} | {'':<10} | {item_cat:<42} | {str_area}"
                 linhas_relatorio.append(linha)
 
-    linhas_relatorio.append("-" * 135)
-    linhas_relatorio.append("=" * 135)
+    linhas_relatorio.append("-" * 142)
+    linhas_relatorio.append("=" * 142)
 
     relatorio_nome = f"{code_muni}_change_report_losses_{ano_1}_vs_{ano_2}.txt"
     relatorio_path = os.path.join(reports_dir, relatorio_nome)
@@ -136,7 +136,7 @@ def main():
     with open(relatorio_path, 'w', encoding='utf-8') as f:
         f.write("\n".join(linhas_relatorio))
 
-    print(f"\n[SUCESSO] Relatório de saldo líquido gerado com sucesso em:\n-> {relatorio_path}\n")
+    print(f"\n[SUCESSO] Relatório de saldo líquido com layout ajustado gerado em:\n-> {relatorio_path}\n")
 
 if __name__ == "__main__":
     main()
