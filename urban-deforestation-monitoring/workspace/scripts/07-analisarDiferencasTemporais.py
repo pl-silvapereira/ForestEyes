@@ -43,7 +43,7 @@ def main():
         sys.exit(1)
 
     print("=" * 135)
-    print(f"📊 GERANDO RELATÓRIO DETALHADO DE TRANSIÇÕES (BALANÇO COMPLETO POR CLASSE)")
+    print(f"📊 GERANDO RELATÓRIO DETALHADO DE TRANSIÇÕES (SALDO LÍQUIDO POR CLASSE)")
     print(f"📍 MUNICÍPIO: {nome_cidade} - {uf} (IBGE: {code_muni}) | PERÍODO: {ano_1} vs {ano_2}")
     print("=" * 135)
 
@@ -73,7 +73,7 @@ def main():
 
     linhas_relatorio = []
     linhas_relatorio.append("=" * 135)
-    linhas_relatorio.append(f" RELATÓRIO DETALHADO DE TRANSIÇÕES DE USO DO SOLO (BALANÇO COMPLETO POR CLASSE)")
+    linhas_relatorio.append(f" RELATÓRIO DETALHADO DE TRANSIÇÕES DE USO DO SOLO (SALDO LÍQUIDO POR CLASSE)")
     linhas_relatorio.append(f" MUNICÍPIO: {nome_cidade} - {uf} (IBGE: {code_muni}) | PERÍODO: {ano_1} vs {ano_2}")
     linhas_relatorio.append("=" * 135)
     
@@ -88,27 +88,29 @@ def main():
 
         detalhes_list = []
         
-        # Para cada categoria, listar TODAS as outras classes explicitamente (Ganho, Perda ou 0)
+        # Para cada categoria, calcular o saldo líquido com cada uma das outras classes
         for other_cat in todas_categorias:
             if other_cat == cat:
                 continue
             
-            # Ganhos vindos de other_cat para cat -> Positivo
+            # Ganhos vindos de other_cat para cat
             ganho_row = transicoes[(transicoes['cat_ano1'] == other_cat) & (transicoes['cat_ano2'] == cat)]
             area_ganho = ganho_row['area_ha'].values[0] if not ganho_row.empty else 0.0
 
-            # Perdas de cat indo para other_cat -> Negativo
+            # Perdas de cat indo para other_cat
             perda_row = transicoes[(transicoes['cat_ano1'] == cat) & (transicoes['cat_ano2'] == other_cat)]
             area_perda = perda_row['area_ha'].values[0] if not perda_row.empty else 0.0
 
-            if area_ganho > 0.001:
-                detalhes_list.append((f"De: {other_cat}", area_ganho))
-            if area_perda > 0.001:
-                detalhes_list.append((f"Para: {other_cat}", -area_perda))
-            if area_ganho <= 0.001 and area_perda <= 0.001:
+            net_area = area_ganho - area_perda
+
+            if net_area > 0.001:
+                detalhes_list.append((f"De: {other_cat}", net_area))
+            elif net_area < -0.001:
+                detalhes_list.append((f"Para: {other_cat}", net_area))
+            else:
                 detalhes_list.append((f"De/Para: {other_cat}", 0.00))
 
-        # Ordenar: maiores valores absolutos primeiro, valores zerados por último
+        # Ordenar os fluxos pelo valor absoluto (maiores saldos primeiro)
         detalhes_list = sorted(detalhes_list, key=lambda x: (abs(x[1]) > 0.001, abs(x[1])), reverse=True)
 
         if not detalhes_list:
@@ -134,7 +136,7 @@ def main():
     with open(relatorio_path, 'w', encoding='utf-8') as f:
         f.write("\n".join(linhas_relatorio))
 
-    print(f"\n[SUCESSO] Relatório detalhado gerado com sucesso em:\n-> {relatorio_path}\n")
+    print(f"\n[SUCESSO] Relatório de saldo líquido gerado com sucesso em:\n-> {relatorio_path}\n")
 
 if __name__ == "__main__":
     main()
