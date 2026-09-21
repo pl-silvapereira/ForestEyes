@@ -97,7 +97,6 @@ def baixar_e_processar_cbers(code_muni, ano_fim, dados_json, projeto_root):
 
     pasta_entrada_cbers = os.path.join(projeto_root, "data", "input", "CBERS-4A-WPM", str(ano_fim))
     pasta_saida_pansharpening = os.path.join(projeto_root, "data", "output", "pansharpening", str(ano_fim))
-    diretorio_reports = os.path.join(projeto_root, "reports")
     
     os.makedirs(pasta_entrada_cbers, exist_ok=True)
     os.makedirs(pasta_saida_pansharpening, exist_ok=True)
@@ -196,6 +195,9 @@ def main():
     print(f" PERÍODO MAPBIOMAS: {ano_inicio} e {ano_fim} | CBERS: {ano_fim}")
     print("=" * 60)
 
+    # 1. Inicializar o Earth Engine PRIMEIRO (antes de instanciar geometrias do EE)
+    inicializar_ee()
+
     gdf_muni = gdf_muni.to_crs(epsg=4326)
     geojson_dict = json.loads(gdf_muni.to_json())
     coordenadas = geojson_dict['features'][0]['geometry']['coordinates']
@@ -211,13 +213,10 @@ def main():
     lats = [p[1] for p in bounds]
     oeste, leste, sul, norte = min(lons), max(lons), min(lats), max(lats)
 
-    # Inicializar GEE uma única vez para os downloads do MapBiomas
-    inicializar_ee()
-
-    # 1. Download MapBiomas Ano Início
+    # 2. Download MapBiomas Ano Início
     caminho_mb_inicio = baixar_mapbiomas(code_muni, ano_inicio, limite_geopolitico, nome_cidade, uf, project_root)
 
-    # 2. Download MapBiomas Ano Fim
+    # 3. Download MapBiomas Ano Fim
     caminho_mb_fim = baixar_mapbiomas(code_muni, ano_fim, limite_geopolitico, nome_cidade, uf, project_root)
 
     # Salvar relatório JSON base para compatibilidade com o fluxo existente
@@ -237,7 +236,7 @@ def main():
         json.dump(dados_json, f_json, indent=4, ensure_ascii=False)
     print(f"\n[RELATÓRIO] Relatório consolidado gerado em:\n-> {caminho_json}\n")
 
-    # 3. Download e Processamento CBERS Ano Fim
+    # 4. Download e Processamento CBERS Ano Fim
     caminho_cbers = baixar_e_processar_cbers(code_muni, ano_fim, dados_json, project_root)
 
     print(f"\n[SUCESSO] Processo unificado de downloads finalizado com êxito!")
