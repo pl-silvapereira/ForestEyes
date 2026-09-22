@@ -11,7 +11,6 @@ from datetime import date
 from dotenv import load_dotenv
 import requests
 
-# Try-except para importações opcionais do cbers4asat
 try:
     from cbers4asat import Cbers4aAPI
     from cbers4asat.tools import rgbn_composite
@@ -45,8 +44,9 @@ def baixar_mapbiomas(code_muni, ano, limite_geopolitico, nome_cidade, uf, projet
     mapbiomas_10m = ee.Image(asset_mapbiomas_10m).select(banda_ano)
     imagem_recortada = mapbiomas_10m.clip(limite_geopolitico).unmask(0).short()
 
-    pasta_temporaria = 'MapBiomas_Temp'
-    print(f"Enviando tarefa para a pasta temporária '{pasta_temporaria}' no Google Drive...")
+    # Pasta temporária isolada por ano para evitar conflitos no Google Drive
+    pasta_temporaria = f'MapBiomas_Temp_{ano}'
+    print(f"Enviando tarefa para a pasta temporária exclusiva '{pasta_temporaria}' no Google Drive...")
     
     tarefa = ee.batch.Export.image.toDrive(
         image=imagem_recortada,
@@ -77,7 +77,7 @@ def baixar_mapbiomas(code_muni, ano, limite_geopolitico, nome_cidade, uf, projet
     arquivo_origem = os.path.join(caminho_temp_local, nome_arquivo_mapbiomas)
     
     tentativas = 0
-    while not os.path.exists(arquivo_origem) and tentativas < 15:
+    while not os.path.exists(arquivo_origem) and tentativas < 20:
         time.sleep(5)
         tentativas += 1
 
@@ -85,8 +85,10 @@ def baixar_mapbiomas(code_muni, ano, limite_geopolitico, nome_cidade, uf, projet
         shutil.move(arquivo_origem, caminho_mapbiomas_local)
         try: os.rmdir(caminho_temp_local)
         except OSError: pass
+    else:
+        raise Exception(f"[ERRO] O arquivo {nome_arquivo_mapbiomas} não foi encontrado no Drive após a exportação.")
     
-    print(f"MapBiomas {ano} salvo em: {caminho_mapbiomas_local}")
+    print(f"MapBiomas {ano} salvo com sucesso em: {caminho_mapbiomas_local}")
     return caminho_mapbiomas_local
 
 def baixar_e_processar_cbers(code_muni, ano_fim, dados_json, projeto_root):
@@ -195,7 +197,6 @@ def main():
     print(f" PERÍODO MAPBIOMAS: {ano_inicio} e {ano_fim} | CBERS: {ano_fim}")
     print("=" * 60)
 
-    # 1. Inicializar o Earth Engine PRIMEIRO (antes de instanciar geometrias do EE)
     inicializar_ee()
 
     gdf_muni = gdf_muni.to_crs(epsg=4326)
@@ -213,13 +214,12 @@ def main():
     lats = [p[1] for p in bounds]
     oeste, leste, sul, norte = min(lons), max(lons), min(lats), max(lats)
 
-    # 2. Download MapBiomas Ano Início
+    # 1. Download MapBiomas Ano Início
     caminho_mb_inicio = baixar_mapbiomas(code_muni, ano_inicio, limite_geopolitico, nome_cidade, uf, project_root)
 
-    # 3. Download MapBiomas Ano Fim
+    # 2. Download MapBiomas Ano Fim (Agora com pasta temporária totalmente isolada)
     caminho_mb_fim = baixar_mapbiomas(code_muni, ano_fim, limite_geopolitico, nome_cidade, uf, project_root)
 
-    # Salvar relatório JSON base para compatibilidade com o fluxo existente
     dados_json = {
         "code_muni": code_muni,
         "nome_cidade": nome_cidade,
@@ -236,7 +236,7 @@ def main():
         json.dump(dados_json, f_json, indent=4, ensure_ascii=False)
     print(f"\n[RELATÓRIO] Relatório consolidado gerado em:\n-> {caminho_json}\n")
 
-    # 4. Download e Processamento CBERS Ano Fim
+    # 3. Download e Processamento CBERS Ano Fim
     caminho_cbers = baixar_e_processar_cbers(code_muni, ano_fim, dados_json, project_root)
 
     print(f"\n[SUCESSO] Processo unificado de downloads finalizado com êxito!")
