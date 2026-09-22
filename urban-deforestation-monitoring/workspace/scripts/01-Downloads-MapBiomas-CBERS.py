@@ -168,9 +168,7 @@ def baixar_e_processar_cbers(code_muni, ano_fim, dados_json, projeto_root):
     caminho_stack = os.path.join(pasta_saida_pansharpening, nome_arquivo_stack)
     print(f"[SUCESSO] Stack CBERS gerado em: {caminho_stack}")
     
-    # =========================================================================
-    # GERAR AS 4 COMPOSIÇÕES VISUAIS SOLICITADAS PELO PROF. ÁLVARO
-    # =========================================================================
+    # Gerar composições para Zooniverse com metadados NIR corretos
     gerar_composicoes_zooniverse(caminho_stack, pasta_saida_pansharpening, code_muni, ano_fim)
 
     return caminho_stack
@@ -182,23 +180,21 @@ def normalize_band(band_data):
     return normalized.astype(np.uint8)
 
 def gerar_composicoes_zooniverse(caminho_stack, pasta_saida, code_muni, ano):
-    print("\n--- GERANDO COMPOSIÇÕES VISUAIS (ZOONIVERSE) ---")
+    print("\n--- GERANDO COMPOSIÇÕES VISUAIS (ZOONIVERSE) COM METADADOS NIR ---")
     pasta_comp = os.path.join(pasta_saida, "composicoes")
     os.makedirs(pasta_comp, exist_ok=True)
 
     with rasterio.open(caminho_stack) as src:
         meta = src.meta.copy()
-        img = src.read() # Assume ordem padrão gerada pelo rgbn_composite: R, G, B, NIR (ou similar)
+        img = src.read()
 
-    # Verificação de dimensões das bandas (ajuste caso necessário)
-    # Geralmente rgbn_composite gera: Band 1 = Red, Band 2 = Green, Band 3 = Blue, Band 4 = NIR
     if img.shape[0] >= 4:
         red_data = img[0]
         green_data = img[1]
         blue_data = img[2]
         nir_data = img[3]
     else:
-        print("[AVISO] O stack não possui 4 bandas completas para gerar todas as composições.")
+        print("[AVISO] O stack não possui 4 bandas completas.")
         return
 
     print("Normalizando bandas para o padrão visual...")
@@ -207,14 +203,18 @@ def gerar_composicoes_zooniverse(caminho_stack, pasta_saida, code_muni, ano):
     b_norm = normalize_band(blue_data)
     nir_norm = normalize_band(nir_data)
 
-    # 1. Cor Natural (R-G-B)
-    path_rgb = os.path.join(pasta_comp, f"{code_muni}_{ano}_1_CorNatural_RGB.tif")
     meta_rgb = meta.copy()
     meta_rgb.update(count=3, dtype=rasterio.uint8)
+
+    # 1. Cor Natural (R-G-B)
+    path_rgb = os.path.join(pasta_comp, f"{code_muni}_{ano}_1_CorNatural_RGB.tif")
     with rasterio.open(path_rgb, "w", **meta_rgb) as dst:
         dst.write(r_norm, 1)
         dst.write(g_norm, 2)
         dst.write(b_norm, 3)
+        dst.set_band_description(1, "Red")
+        dst.set_band_description(2, "Green")
+        dst.set_band_description(3, "Blue")
     print(f" -> Gerado: {path_rgb}")
 
     # 2. Falsa Cor (NIR-R-G)
@@ -223,14 +223,20 @@ def gerar_composicoes_zooniverse(caminho_stack, pasta_saida, code_muni, ano):
         dst.write(nir_norm, 1)
         dst.write(r_norm, 2)
         dst.write(g_norm, 3)
+        dst.set_band_description(1, "NIR")
+        dst.set_band_description(2, "Red")
+        dst.set_band_description(3, "Green")
     print(f" -> Gerado: {path_nir_rg}")
 
-    # 3. Outra Composição Espectral (NIR-G-B)
+    # 3. Falsa Cor Alternativa (NIR-G-B)
     path_nir_gb = os.path.join(pasta_comp, f"{code_muni}_{ano}_3_FalsaCor_NIR-G-B.tif")
     with rasterio.open(path_nir_gb, "w", **meta_rgb) as dst:
         dst.write(nir_norm, 1)
         dst.write(g_norm, 2)
         dst.write(b_norm, 3)
+        dst.set_band_description(1, "NIR")
+        dst.set_band_description(2, "Green")
+        dst.set_band_description(3, "Blue")
     print(f" -> Gerado: {path_nir_gb}")
 
     # 4. NDVI em tons de cinza
@@ -247,6 +253,7 @@ def gerar_composicoes_zooniverse(caminho_stack, pasta_saida, code_muni, ano):
     meta_ndvi.update(count=1, dtype=rasterio.uint8)
     with rasterio.open(path_ndvi, "w", **meta_ndvi) as dst:
         dst.write(ndvi_scaled, 1)
+        dst.set_band_description(1, "NDVI")
     print(f" -> Gerado: {path_ndvi}")
 
 def main():
@@ -320,7 +327,7 @@ def main():
     # 3. Download, Processamento CBERS e Geração das Composições Zooniverse
     caminho_cbers = baixar_e_processar_cbers(code_muni, ano_fim, dados_json, project_root)
 
-    print(f"\n[SUCESSO] Processo unificado concluído com êxito!")
+    print(f"\n[SUCESSO] Processo unificado de downloads e composições finalizado com êxito!")
 
 if __name__ == "__main__":
     main()
