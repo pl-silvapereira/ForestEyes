@@ -10,6 +10,8 @@ import google.auth
 from datetime import date
 from dotenv import load_dotenv
 import requests
+import numpy as np
+import rasterio
 
 try:
     from cbers4asat import Cbers4aAPI
@@ -44,7 +46,6 @@ def baixar_mapbiomas(code_muni, ano, limite_geopolitico, nome_cidade, uf, projet
     mapbiomas_10m = ee.Image(asset_mapbiomas_10m).select(banda_ano)
     imagem_recortada = mapbiomas_10m.clip(limite_geopolitico).unmask(0).short()
 
-    # Pasta temporária isolada por ano para evitar conflitos no Google Drive
     pasta_temporaria = f'MapBiomas_Temp_{ano}'
     print(f"Enviando tarefa para a pasta temporária exclusiva '{pasta_temporaria}' no Google Drive...")
     
@@ -166,7 +167,87 @@ def baixar_e_processar_cbers(code_muni, ano_fim, dados_json, projeto_root):
     
     caminho_stack = os.path.join(pasta_saida_pansharpening, nome_arquivo_stack)
     print(f"[SUCESSO] Stack CBERS gerado em: {caminho_stack}")
+    
+    # =========================================================================
+    # GERAR AS 4 COMPOSIÇÕES VISUAIS SOLICITADAS PELO PROF. ÁLVARO
+    # =========================================================================
+    gerar_composicoes_zooniverse(caminho_stack, pasta_saida_pansharpening, code_muni, ano_fim)
+
     return caminho_stack
+
+def normalize_band(band_data):
+    band_data = band_data.astype(np.float32)
+    p2, p98 = np.percentile(band_data[band_data > 0], (2, 98)) if np.any(band_data > 0) else (0, 1)
+    normalized = np.clip((band_data - p2) / (p98 - p2) * 255.0, 0, 255)
+    return normalized.astype(np.uint8)
+
+def gerar_composicoes_zooniverse(caminho_stack, pasta_saida, code_muni, ano):
+    print("\n--- GERANDO COMPOSIÇÕES VISUAIS (ZOONIVERSE) ---")
+    pasta_comp = os.path.join(pasta_saida, "composicoes")
+    os.makedirs(pasta_comp, exist_ok=True)
+
+    with rasterio.open(caminho_stack) as src:
+        meta = src.meta.copy()
+        img = src.read() # Assume ordem padrão gerada pelo rgbn_composite: R, G, B, NIR (ou similar)
+
+    # Verificação de dimensões das bandas (ajuste caso necessário)
+    # Geralmente rgbn_composite gera: Band 1 = Red, Band 2 = Green, Band 3 = Blue, Band 4 = NIR
+    if img.shape[0] >= 4:
+        red_data = img[0]
+        green_data = img[1]
+        blue_data = img[2]
+        nir_data = img[3]
+    else:
+        print("[AVISO] O stack não possui 4 bandas completas para gerar todas as composições.")
+        return
+
+    print("Normalizando bandas para o padrão visual...")
+    r_norm = normalize_band(red_data)
+    g_norm = normalize_band(green_data)
+    b_norm = normalize_band(blue_data)
+    nir_norm = normalize_band(nir_data)
+
+    # 1. Cor Natural (R-G-B)
+    path_rgb = os.path.join(pasta_comp, f"{code_muni}_{ano}_1_CorNatural_RGB.tif")
+    meta_rgb = meta.copy()
+    meta_rgb.update(count=3, dtype=rasterio.uint8)
+    with rasterio.open(path_rgb, "w", **meta_rgb) as dst:
+        dst.write(r_norm, 1)
+        dst.write(g_norm, 2)
+        dst.write(b_norm, 3)
+    print(f" -> Gerado: {path_rgb}")
+
+    # 2. Falsa Cor (NIR-R-G)
+    path_nir_rg = os.path.join(pasta_comp, f"{code_muni}_{ano}_2_FalsaCor_NIR-R-G.tif")
+    with rasterio.open(path_nir_rg, "w", **meta_rgb) as dst:
+        dst.write(nir_norm, 1)
+        dst.write(r_norm, 2)
+        dst.write(g_norm, 3)
+    print(f" -> Gerado: {path_nir_rg}")
+
+    # 3. Outra Composição Espectral (NIR-G-B)
+    path_nir_gb = os.path.join(pasta_comp, f"{code_muni}_{ano}_3_FalsaCor_NIR-G-B.tif")
+    with rasterio.open(path_nir_gb, "w", **meta_rgb) as dst:
+        dst.write(nir_norm, 1)
+        dst.write(g_norm, 2)
+        dst.write(b_norm, 3)
+    print(f" -> Gerado: {path_nir_gb}")
+
+    # 4. NDVI em tons de cinza
+    path_ndvi = os.path.join(pasta_comp, f"{code_muni}_{ano}_4_NDVI_Cinza.tif")
+    red_f = red_data.astype(np.float32)
+    nir_f = nir_data.astype(np.float32)
+    denominator = (nir_f + red_f)
+    ndvi = np.zeros_like(red_f)
+    valid_mask = denominator != 0
+    ndvi[valid_mask] = (nir_f[valid_mask] - red_f[valid_mask]) / denominator[valid_mask]
+    
+    ndvi_scaled = np.clip((ndvi + 1) / 2 * 255, 0, 255).astype(np.uint8)
+    meta_ndvi = meta.copy()
+    meta_ndvi.update(count=1, dtype=rasterio.uint8)
+    with rasterio.open(path_ndvi, "w", **meta_ndvi) as dst:
+        dst.write(ndvi_scaled, 1)
+    print(f" -> Gerado: {path_ndvi}")
 
 def main():
     if len(sys.argv) < 4:
@@ -217,7 +298,7 @@ def main():
     # 1. Download MapBiomas Ano Início
     caminho_mb_inicio = baixar_mapbiomas(code_muni, ano_inicio, limite_geopolitico, nome_cidade, uf, project_root)
 
-    # 2. Download MapBiomas Ano Fim (Agora com pasta temporária totalmente isolada)
+    # 2. Download MapBiomas Ano Fim
     caminho_mb_fim = baixar_mapbiomas(code_muni, ano_fim, limite_geopolitico, nome_cidade, uf, project_root)
 
     dados_json = {
@@ -236,10 +317,10 @@ def main():
         json.dump(dados_json, f_json, indent=4, ensure_ascii=False)
     print(f"\n[RELATÓRIO] Relatório consolidado gerado em:\n-> {caminho_json}\n")
 
-    # 3. Download e Processamento CBERS Ano Fim
+    # 3. Download, Processamento CBERS e Geração das Composições Zooniverse
     caminho_cbers = baixar_e_processar_cbers(code_muni, ano_fim, dados_json, project_root)
 
-    print(f"\n[SUCESSO] Processo unificado de downloads finalizado com êxito!")
+    print(f"\n[SUCESSO] Processo unificado concluído com êxito!")
 
 if __name__ == "__main__":
     main()
