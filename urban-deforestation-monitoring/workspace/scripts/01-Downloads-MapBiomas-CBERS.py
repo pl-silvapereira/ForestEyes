@@ -131,6 +131,7 @@ def baixar_e_processar_cbers(code_muni, ano_fim, dados_json, projeto_root):
     if not url_base_tiff.endswith("_L4"):
         url_base_tiff += "_L4"
     
+    # As 5 bandas do sensor WPM do CBERS-4A (0 a 4)
     bandas = ['BAND0', 'BAND1', 'BAND2', 'BAND3', 'BAND4']
     arquivos_baixados = {}
     
@@ -159,10 +160,16 @@ def baixar_e_processar_cbers(code_muni, ano_fim, dados_json, projeto_root):
             sys.exit(1)
 
     nome_arquivo_stack = f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_CLIPPED.tif"
+    
+    # Mapeamento correto das bandas CBERS-4A para a composição com Pan-sharpening (2m)
     rgbn_composite(
-        red=arquivos_baixados['BAND3'], green=arquivos_baixados['BAND2'], 
-        blue=arquivos_baixados['BAND1'], nir=arquivos_baixados['BAND4'],   
-        filename=nome_arquivo_stack, outdir=pasta_saida_pansharpening
+        pan=arquivos_baixados['BAND0'],   # Canal Pancromático (2m)
+        blue=arquivos_baixados['BAND1'],  # Azul (8m)
+        green=arquivos_baixados['BAND2'], # Verde (8m)
+        red=arquivos_baixados['BAND3'],   # Vermelho (8m)
+        nir=arquivos_baixados['BAND4'],   # Infravermelho Próximo (8m)
+        filename=nome_arquivo_stack, 
+        outdir=pasta_saida_pansharpening
     )
     
     caminho_stack = os.path.join(pasta_saida_pansharpening, nome_arquivo_stack)
@@ -188,6 +195,7 @@ def gerar_composicoes_zooniverse(caminho_stack, pasta_saida, code_muni, ano):
         meta = src.meta.copy()
         img = src.read()
 
+    # O rgbn_composite geralmente gera a saída na ordem: Red, Green, Blue, NIR
     if img.shape[0] >= 4:
         red_data = img[0]
         green_data = img[1]
