@@ -7,7 +7,7 @@ import rasterio
 from rasterio.features import rasterize
 from rasterio.windows import Window
 import geopandas as gpd
-from skimage.segmentation import slic, mark_boundaries
+from skimage.segmentation import slic
 import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 
@@ -34,17 +34,19 @@ def main():
     os.makedirs(output_seg_dir, exist_ok=True)
 
     print("=" * 80)
-    print(f"🔬 INICIANDO PROCESSAMENTO DE SEGMENTAÇÃO E ZOONIVERSE (${ano_fim})")
+    print(f"🔬 INICIANDO PROCESSAMENTO DE SEGMENTAÇÃO E ZOONIVERSE ({ano_fim})")
     print("=" * 80)
 
-    # 1. Caminhos dos arquivos de entrada
     path_shp_class = os.path.join(project_root, "data", "output", "classification", ano_fim, f"{code_muni}_Classificado_ForestEyes_{ano_fim}.shp")
     path_shp_mudancas = os.path.join(project_root, "data", "output", "analysis", "mudancas", f"{code_muni}_Mudancas_{ano_inicio}_vs_{ano_fim}.shp")
     path_cbers = os.path.join(project_root, "data", "output", "pansharpening", ano_fim, f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif")
-    path_ndvi = os.path.join(project_root, "data", "output", "pansharpening", "composicoes", f"{code_muni}_{ano_fim}_4_NDVI_Cinza.tif")
+    
+    # Caminho corrigido incluindo o ano_fim na estrutura de diretórios
+    path_ndvi = os.path.join(project_root, "data", "output", "pansharpening", ano_fim, "composicoes", f"{code_muni}_{ano_fim}_4_NDVI_Cinza.tif")
 
-    if not os.path.exists(path_shp_class) or not os.path.exists(path_cbers):
-        print(f"[ERRO CRÍTICO] Arquivos base não encontrados. Verifique a execução dos scripts anteriores.")
+    if not os.path.exists(path_shp_class) or not os.path.exists(path_cbers) or not os.path.exists(path_ndvi):
+        print(f"[ERRO CRÍTICO] Arquivos base ou de composição não encontrados.")
+        print(f" -> NDVI procurado em: {path_ndvi}")
         sys.exit(1)
 
     with rasterio.open(path_cbers) as src:
@@ -99,7 +101,6 @@ def main():
     else:
         mask_segmentar = np.zeros(cbers_shape, dtype=np.uint8)
 
-    # Matriz de Segmentação: 01 = Segmentar, 00 = Não Segmentar
     matriz_segmentacao = np.where(mask_segmentar == 1, 1, 0).astype(np.uint8)
 
     path_matriz_tif = os.path.join(output_seg_dir, f"{code_muni}_Matriz_Segmentacao_{ano_fim}.tif")
@@ -123,7 +124,6 @@ def main():
     print(f" - Não Segmentar: {nao_seg_pixels} pixels | {nao_seg_ha:.2f} ha")
     print(f" - QTS (Quantidade Total de Segmentos estimados): {qts}")
 
-    # Gerar Relatório em .txt
     relatorio_txt_path = os.path.join(reports_dir, f"{code_muni}_relatorio_segmentacao_{ano_fim}.txt")
     with open(relatorio_txt_path, 'w', encoding='utf-8') as f:
         f.write("=" * 80 + "\n")
@@ -144,12 +144,12 @@ def main():
         f.write("=" * 80 + "\n")
     print(f" -> Relatório gerado em: {relatorio_txt_path}")
 
-    # 4. Abordagem Otimizada em Blocos (Tiles) para Superpixels (SLIC)
-    print("\nExecutando segmentação por superpixels (SLIC) otimizada em blocos...")
+    # 4. Segmentação em Blocos Seguros
+    print("\nExecutando segmentação por superpixels (SLIC) em blocos controlados...")
     zooniverse_img_dir = os.path.join(output_seg_dir, "zooniverse_patches")
     os.makedirs(zooniverse_img_dir, exist_ok=True)
 
-    block_size = 2048
+    block_size = 1024
     height, width = cbers_shape
     global_seg_id = 1
 
@@ -162,9 +162,8 @@ def main():
 
                 mask_block = mask_segmentar[y:y+w_height, x:x+w_width]
                 if np.sum(mask_block) == 0:
-                    continue # Pula blocos que não têm área para segmentar
+                    continue
 
-                # Lê bandas RGB e NDVI do bloco
                 r = src_cbers.read(1, window=window)
                 g = src_cbers.read(2, window=window)
                 b = src_cbers.read(3, window=window)
@@ -172,12 +171,13 @@ def main():
 
                 patch_rgb = np.dstack([r, g, b]).astype(np.float32) / 65535.0
 
-                # Quantidade de segmentos proporcional ao tamanho do bloco mascarado
                 block_qtp = np.sum(mask_block == 1)
-                block_n_segs = max(5, int(block_qtp / qps))
+                block_n_segs = max(2, min(50, int(block_qtp / qps)))
 
-                # Aplica SLIC apenas no bloco ativo
-                segments_block = slic(patch_rgb, n_segments=block_n_segs, compactness=10, sigma=1, mask=(mask_block == 1))
+                try:
+                    segments_block = slic(patch_rgb, n_segments=block_n_segs, compactness=10, sigma=1, mask=(mask_block == 1))
+                except Exception:
+                    continue
 
                 unique_segs = np.unique(segments_block)
                 unique_segs = unique_segs[unique_segs > 0]
@@ -190,7 +190,7 @@ def main():
                     ymin, ymax = y_idx.min(), y_idx.max()
                     xmin, xmax = x_idx.min(), x_idx.max()
 
-                    size = max(ymax - ymin, xmax - xmin) + 40
+                    size = max(ymax - ymin, xmax - xmin) + 30
                     cy, cx = (ymin + ymax) // 2, (xmin + xmax) // 2
 
                     ymin_q = max(0, cy - size // 2)
@@ -201,6 +201,9 @@ def main():
                     sub_rgb = patch_rgb[ymin_q:ymax_q, xmin_q:xmax_q]
                     sub_ndvi = ndvi_block[ymin_q:ymax_q, xmin_q:xmax_q]
                     sub_seg = (segments_block[ymin_q:ymax_q, xmin_q:xmax_q] == s_id)
+
+                    if sub_rgb.size == 0:
+                        continue
 
                     # Salvar imagem CBERS com contorno amarelo
                     fig, ax = plt.subplots(figsize=(4, 4))
@@ -219,7 +222,7 @@ def main():
                     plt.close()
 
                     global_seg_id += 1
-                    if global_seg_id > 50: # Limita a quantidade de patches de exemplo gerados na primeira execução
+                    if global_seg_id > 50:
                         break
                 if global_seg_id > 50:
                     break
