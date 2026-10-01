@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 import requests
 import numpy as np
 import rasterio
+from rasterio.warp import reproject, Resampling
 
 try:
     from cbers4asat import Cbers4aAPI
@@ -92,6 +93,46 @@ def baixar_mapbiomas(code_muni, ano, limite_geopolitico, nome_cidade, uf, projet
     print(f"MapBiomas {ano} salvo com sucesso em: {caminho_mapbiomas_local}")
     return caminho_mapbiomas_local
 
+def aplicar_pansharpening(caminho_pan, caminho_multi, caminho_saida):
+    """Funde as bandas de 8m com a banda PAN (2m) utilizando Transformação Brovey."""
+    print("Aplicando Pan-sharpening (Fusão para 2m)... Isso pode levar alguns instantes.")
+    with rasterio.open(caminho_pan) as pan_src:
+        pan_meta = pan_src.meta.copy()
+        pan_data = pan_src.read(1).astype(np.float32)
+        
+    with rasterio.open(caminho_multi) as multi_src:
+        num_bands = multi_src.count
+        
+        # Matriz para armazenar as bandas 8m redimensionadas para a grade de 2m
+        multi_data = np.empty((num_bands, pan_meta['height'], pan_meta['width']), dtype=np.float32)
+        
+        reproject(
+            source=rasterio.band(multi_src, tuple(range(1, num_bands + 1))),
+            destination=multi_data,
+            src_transform=multi_src.transform,
+            src_crs=multi_src.crs,
+            dst_transform=pan_meta['transform'],
+            dst_crs=pan_meta['crs'],
+            resampling=Resampling.bilinear
+        )
+        
+    # Transformação Brovey: Band_PS = Band_MS * (PAN / Média(Bandas_MS))
+    media_multi = np.mean(multi_data, axis=0)
+    media_multi[media_multi == 0] = 1e-6 # Previne divisão por zero
+    
+    ratio = pan_data / media_multi
+    pan_sharpened = np.clip(multi_data * ratio, 0, 65535).astype(np.uint16)
+    
+    pan_meta.update(count=num_bands, dtype=rasterio.uint16, photometric='RGB')
+    
+    with rasterio.open(caminho_saida, 'w', **pan_meta) as dst:
+        dst.write(pan_sharpened)
+        dst.set_band_description(1, "Red")
+        dst.set_band_description(2, "Green")
+        dst.set_band_description(3, "Blue")
+        if num_bands >= 4:
+            dst.set_band_description(4, "NIR")
+
 def baixar_e_processar_cbers(code_muni, ano_fim, dados_json, projeto_root):
     print(f"\n--- INICIANDO DOWNLOAD E PROCESSAMENTO CBERS-4A ({ano_fim}) ---")
     coords = dados_json['coordenadas_extremas']
@@ -131,7 +172,6 @@ def baixar_e_processar_cbers(code_muni, ano_fim, dados_json, projeto_root):
     if not url_base_tiff.endswith("_L4"):
         url_base_tiff += "_L4"
     
-    # As 5 bandas do sensor WPM do CBERS-4A (0 a 4)
     bandas = ['BAND0', 'BAND1', 'BAND2', 'BAND3', 'BAND4']
     arquivos_baixados = {}
     
@@ -159,26 +199,27 @@ def baixar_e_processar_cbers(code_muni, ano_fim, dados_json, projeto_root):
         if not sucesso:
             sys.exit(1)
 
-    nome_arquivo_stack = f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_CLIPPED.tif"
+    # 1. Empilhar apenas as bandas multiespectrais (8 metros)
+    nome_arquivo_stack_8m = f"{code_muni}_{ano_fim}_CBERS_STACK_8m.tif"
+    caminho_stack_8m = os.path.join(pasta_saida_pansharpening, nome_arquivo_stack_8m)
     
-    # Mapeamento correto das bandas CBERS-4A para a composição com Pan-sharpening (2m)
     rgbn_composite(
-        pan=arquivos_baixados['BAND0'],   # Canal Pancromático (2m)
-        blue=arquivos_baixados['BAND1'],  # Azul (8m)
-        green=arquivos_baixados['BAND2'], # Verde (8m)
-        red=arquivos_baixados['BAND3'],   # Vermelho (8m)
-        nir=arquivos_baixados['BAND4'],   # Infravermelho Próximo (8m)
-        filename=nome_arquivo_stack, 
-        outdir=pasta_saida_pansharpening
+        red=arquivos_baixados['BAND3'], green=arquivos_baixados['BAND2'], 
+        blue=arquivos_baixados['BAND1'], nir=arquivos_baixados['BAND4'],   
+        filename=nome_arquivo_stack_8m, outdir=pasta_saida_pansharpening
     )
     
-    caminho_stack = os.path.join(pasta_saida_pansharpening, nome_arquivo_stack)
-    print(f"[SUCESSO] Stack CBERS gerado em: {caminho_stack}")
+    # 2. Executar Pan-sharpening com a Banda 0
+    nome_arquivo_stack_2m = f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif"
+    caminho_stack_2m = os.path.join(pasta_saida_pansharpening, nome_arquivo_stack_2m)
     
-    # Gerar composições para Zooniverse com metadados NIR corretos
-    gerar_composicoes_zooniverse(caminho_stack, pasta_saida_pansharpening, code_muni, ano_fim)
+    aplicar_pansharpening(arquivos_baixados['BAND0'], caminho_stack_8m, caminho_stack_2m)
+    print(f"[SUCESSO] Stack CBERS fundido gerado em: {caminho_stack_2m}")
+    
+    # 3. Gerar composições para Zooniverse utilizando a imagem de 2m
+    gerar_composicoes_zooniverse(caminho_stack_2m, pasta_saida_pansharpening, code_muni, ano_fim)
 
-    return caminho_stack
+    return caminho_stack_2m
 
 def normalize_band(band_data):
     band_data = band_data.astype(np.float32)
@@ -195,7 +236,6 @@ def gerar_composicoes_zooniverse(caminho_stack, pasta_saida, code_muni, ano):
         meta = src.meta.copy()
         img = src.read()
 
-    # O rgbn_composite geralmente gera a saída na ordem: Red, Green, Blue, NIR
     if img.shape[0] >= 4:
         red_data = img[0]
         green_data = img[1]
@@ -267,7 +307,7 @@ def gerar_composicoes_zooniverse(caminho_stack, pasta_saida, code_muni, ano):
 def main():
     if len(sys.argv) < 4:
         print("Erro: Parâmetros insuficientes.")
-        print("Uso correto: python 01-Downloads-MapBiomas-CBERS.py <code_muni> <ano_inicio> <ano_fim>")
+        print("Uso correto: python 01-Downloads-MapBiomas-CBERS.py   ")
         print("Exemplo: python 01-Downloads-MapBiomas-CBERS.py 3549904 2023 2024")
         sys.exit(1)
 
