@@ -8,6 +8,7 @@ import rasterio
 from rasterio.features import rasterize
 from rasterio.windows import Window
 import geopandas as gpd
+from shapely.ops import unary_union
 from skimage.segmentation import slic
 import matplotlib.pyplot as plt
 from dotenv import load_dotenv
@@ -34,7 +35,7 @@ def main():
     os.makedirs(output_seg_dir, exist_ok=True)
 
     print("=" * 80)
-    print(f"🔬 INICIANDO PROCESSAMENTO DE SEGMENTAÇÃO E ZOONIVERSE ({ano_fim}) - MODO ESTÁVEL")
+    print(f"🔬 INICIANDO PROCESSAMENTO DE SEGMENTAÇÃO E ZOONIVERSE ({ano_fim}) - MODO OTIMIZADO")
     print("=" * 80)
 
     path_shp_class = os.path.join(project_root, "data", "output", "classification", ano_fim, f"{code_muni}_Classificado_ForestEyes_{ano_fim}.shp")
@@ -84,10 +85,13 @@ def main():
     if gdf_segmentar.crs != cbers_crs:
         gdf_segmentar = gdf_segmentar.to_crs(cbers_crs)
 
+    print("Otimizando e unificando geometrias para acelerar a rasterização...")
+    # Dissolve todas as geometrias em um único bloco limpo/unificado para evitar sobrecarga no rasterize
+    geometria_unificada = unary_union(gdf_segmentar.geometry.buffer(0))
+    shapes_seg = [(geometria_unificada, 1)]
+
     print("Rasterizando máscaras de segmentação...")
-    shapes_seg = [(geom, 1) for geom in gdf_segmentar.geometry if geom.is_valid and not geom.is_empty]
-    
-    if shapes_seg:
+    if not geometria_unificada.is_empty:
         mask_segmentar = rasterize(
             shapes=shapes_seg,
             out_shape=cbers_shape,
@@ -226,10 +230,9 @@ def main():
                     plt.close('all')
 
                     global_seg_id += 1
-                    if global_seg_id > 30:  # Limite seguro para teste e validação inicial
+                    if global_seg_id > 30:  # Limite seguro para teste
                         break
                 
-                # Coleta de lixo da RAM a cada bloco processado
                 gc.collect()
 
                 if global_seg_id > 30:
@@ -237,7 +240,7 @@ def main():
             if global_seg_id > 30:
                 break
 
-    print(f"\n[SUCESSO] Processo de segmentação e geração de patches concluído com êxito!")
+    print(f"\n[SUCESSO] Processo concluído com êxito!")
     print(f"-> Patches salvos em: {zooniverse_img_dir}")
 
 if __name__ == "__main__":
