@@ -35,7 +35,7 @@ def main():
     os.makedirs(output_seg_dir, exist_ok=True)
 
     print("=" * 80)
-    print(f"🔬 INICIANDO PROCESSAMENTO DE SEGMENTAÇÃO E ZOONIVERSE ({ano_fim}) - COM LOGS")
+    print(f"🔬 INICIANDO PROCESSAMENTO DE SEGMENTAÇÃO E ZOONIVERSE ({ano_fim}) - CORREÇÃO DE MEMÓRIA")
     print("=" * 80)
 
     path_shp_class = os.path.join(project_root, "data", "output", "classification", ano_fim, f"{code_muni}_Classificado_ForestEyes_{ano_fim}.shp")
@@ -110,13 +110,24 @@ def main():
         dst.write(matriz_segmentacao, 1)
     print(f" -> Matriz GeoTIFF salva em: {path_matriz_tif}")
 
+    print("Gerando imagem PNG da Matriz (aplicando sub-amostragem para não exceder a memória RAM)...")
     path_matriz_png = os.path.join(output_seg_dir, f"{code_muni}_Matriz_Segmentacao_{ano_fim}.png")
+    
+    # Sub-amostragem dinâmica: reduz imagens gigantes para ~1500 pixels de largura máxima
+    passo = max(1, cbers_shape[1] // 1500)
+    matriz_reduzida = matriz_segmentacao[::passo, ::passo]
+
     fig, ax = plt.subplots(figsize=(6, 8))
-    ax.imshow(matriz_segmentacao, cmap='gray', interpolation='nearest')
+    ax.imshow(matriz_reduzida, cmap='gray', interpolation='nearest')
     ax.axis('off')
     plt.savefig(path_matriz_png, bbox_inches='tight', pad_inches=0, dpi=300)
     plt.close('all')
     print(f" -> Imagem PNG da Matriz salva em: {path_matriz_png}")
+
+    # Liberação forçada de memória RAM
+    del matriz_reduzida
+    del matriz_segmentacao
+    gc.collect()
 
     qtp_pixels = int(np.sum(mask_segmentar == 1))
     qtp_ha = qtp_pixels * pixel_area_ha
@@ -150,7 +161,6 @@ def main():
         f.write("=" * 80 + "\n")
     print(f" -> Relatório gerado em: {relatorio_txt_path}")
 
-    # 4. Segmentação em Blocos com rastreamento visual no console
     print("\nExecutando segmentação por superpixels (SLIC) em blocos (acompanhe o progresso abaixo)...")
     zooniverse_img_dir = os.path.join(output_seg_dir, "zooniverse_patches")
     os.makedirs(zooniverse_img_dir, exist_ok=True)
@@ -214,7 +224,6 @@ def main():
                     if sub_rgb.size == 0:
                         continue
 
-                    # Patch CBERS com contorno amarelo
                     fig, ax = plt.subplots(figsize=(4, 4))
                     ax.imshow(sub_rgb)
                     ax.contour(sub_seg, colors='yellow', linewidths=1.5)
@@ -222,7 +231,6 @@ def main():
                     plt.savefig(os.path.join(zooniverse_img_dir, f"patch_cbers_seg_{global_seg_id}.png"), bbox_inches='tight', pad_inches=0, dpi=150)
                     plt.close('all')
 
-                    # Patch NDVI com contorno vermelho
                     fig, ax = plt.subplots(figsize=(4, 4))
                     ax.imshow(sub_ndvi, cmap='gray')
                     ax.contour(sub_seg, colors='red', linewidths=1.5)
@@ -231,7 +239,7 @@ def main():
                     plt.close('all')
 
                     global_seg_id += 1
-                    if global_seg_id > 30:  # Limite seguro inicial de patches
+                    if global_seg_id > 30: 
                         break
                 
                 gc.collect()
