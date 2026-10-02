@@ -7,7 +7,7 @@ import rasterio
 from rasterio.features import rasterize
 from rasterio.windows import Window
 import geopandas as gpd
-from skimage.segmentation import slic
+from skimage.segmentation import slic, mark_boundaries
 import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 
@@ -40,13 +40,10 @@ def main():
     path_shp_class = os.path.join(project_root, "data", "output", "classification", ano_fim, f"{code_muni}_Classificado_ForestEyes_{ano_fim}.shp")
     path_shp_mudancas = os.path.join(project_root, "data", "output", "analysis", "mudancas", f"{code_muni}_Mudancas_{ano_inicio}_vs_{ano_fim}.shp")
     path_cbers = os.path.join(project_root, "data", "output", "pansharpening", ano_fim, f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif")
-    
-    # Caminho corrigido incluindo o ano_fim na estrutura de diretórios
     path_ndvi = os.path.join(project_root, "data", "output", "pansharpening", ano_fim, "composicoes", f"{code_muni}_{ano_fim}_4_NDVI_Cinza.tif")
 
     if not os.path.exists(path_shp_class) or not os.path.exists(path_cbers) or not os.path.exists(path_ndvi):
         print(f"[ERRO CRÍTICO] Arquivos base ou de composição não encontrados.")
-        print(f" -> NDVI procurado em: {path_ndvi}")
         sys.exit(1)
 
     with rasterio.open(path_cbers) as src:
@@ -103,12 +100,22 @@ def main():
 
     matriz_segmentacao = np.where(mask_segmentar == 1, 1, 0).astype(np.uint8)
 
+    # 1. Salvar a Matriz GeoTIFF (01 e 00)
     path_matriz_tif = os.path.join(output_seg_dir, f"{code_muni}_Matriz_Segmentacao_{ano_fim}.tif")
     meta_matriz = cbers_meta.copy()
     meta_matriz.update(count=1, dtype=rasterio.uint8, nodata=255)
     with rasterio.open(path_matriz_tif, "w", **meta_matriz) as dst:
         dst.write(matriz_segmentacao, 1)
     print(f" -> Matriz de Segmentação salva em: {path_matriz_tif}")
+
+    # Gerar a imagem visual estilo "mapa binário preto e branco" igual à sua primeira referência
+    path_matriz_png = os.path.join(output_seg_dir, f"{code_muni}_Matriz_Segmentacao_{ano_fim}.png")
+    fig, ax = plt.subplots(figsize=(6, 8))
+    ax.imshow(matriz_segmentacao, cmap='gray', interpolation='nearest')
+    ax.axis('off')
+    plt.savefig(path_matriz_png, bbox_inches='tight', pad_inches=0, dpi=300)
+    plt.close()
+    print(f" -> Imagem PNG da Matriz salva em: {path_matriz_png}")
 
     qtp_pixels = int(np.sum(mask_segmentar == 1))
     qtp_ha = qtp_pixels * pixel_area_ha
@@ -124,6 +131,7 @@ def main():
     print(f" - Não Segmentar: {nao_seg_pixels} pixels | {nao_seg_ha:.2f} ha")
     print(f" - QTS (Quantidade Total de Segmentos estimados): {qts}")
 
+    # Gerar Relatório em .txt
     relatorio_txt_path = os.path.join(reports_dir, f"{code_muni}_relatorio_segmentacao_{ano_fim}.txt")
     with open(relatorio_txt_path, 'w', encoding='utf-8') as f:
         f.write("=" * 80 + "\n")
@@ -144,14 +152,17 @@ def main():
         f.write("=" * 80 + "\n")
     print(f" -> Relatório gerado em: {relatorio_txt_path}")
 
-    # 4. Segmentação em Blocos Seguros
-    print("\nExecutando segmentação por superpixels (SLIC) em blocos controlados...")
+    # 4. Segmentação em Blocos e Geração da Imagem Geral com Contornos Amarelos (Estilo Colmeia)
+    print("\nExecutando segmentação por superpixels (SLIC) em blocos e gerando visão geral...")
     zooniverse_img_dir = os.path.join(output_seg_dir, "zooniverse_patches")
     os.makedirs(zooniverse_img_dir, exist_ok=True)
 
     block_size = 1024
     height, width = cbers_shape
     global_seg_id = 1
+
+    # Matriz para acumular os contornos gerais da cidade (para gerar a imagem estilo favo de mel geral)
+    overview_segments = np.zeros((height, width), dtype=np.int32)
 
     with rasterio.open(path_cbers) as src_cbers, rasterio.open(path_ndvi) as src_ndvi_file:
         for y in range(0, height, block_size):
@@ -179,6 +190,9 @@ def main():
                 except Exception:
                     continue
 
+                # Salvar no overview geral deslocado
+                overview_segments[y:y+w_height, x:x+w_width] = np.where(segments_block > 0, segments_block + global_seg_id, 0)
+
                 unique_segs = np.unique(segments_block)
                 unique_segs = unique_segs[unique_segs > 0]
 
@@ -205,7 +219,7 @@ def main():
                     if sub_rgb.size == 0:
                         continue
 
-                    # Salvar imagem CBERS com contorno amarelo
+                    # Salvar patch CBERS com contorno amarelo
                     fig, ax = plt.subplots(figsize=(4, 4))
                     ax.imshow(sub_rgb)
                     ax.contour(sub_seg, colors='yellow', linewidths=1.5)
@@ -213,7 +227,7 @@ def main():
                     plt.savefig(os.path.join(zooniverse_img_dir, f"patch_cbers_seg_{global_seg_id}.png"), bbox_inches='tight', pad_inches=0, dpi=150)
                     plt.close()
 
-                    # Salvar imagem NDVI com contorno vermelho
+                    # Salvar patch NDVI com contorno vermelho
                     fig, ax = plt.subplots(figsize=(4, 4))
                     ax.imshow(sub_ndvi, cmap='gray')
                     ax.contour(sub_seg, colors='red', linewidths=1.5)
@@ -229,8 +243,22 @@ def main():
             if global_seg_id > 50:
                 break
 
-    print(f"\n[SUCESSO] Processo de segmentação e geração de patches para o Zooniverse concluído com êxito!")
-    print(f"-> Patches salvos em: {zooniverse_img_dir}")
+    # Gerar a imagem geral da cidade do CBERS com os superpixels delineados em amarelo (estilo favo de mel)
+    print("Gerando imagem geral do CBERS com os segmentos da cidade (favo de mel)...")
+    with rasterio.open(path_cbers) as src_cbers:
+        full_rgb = np.dstack([src_cbers.read(1), src_cbers.read(2), src_cbers.read(3)]).astype(np.float32) / 65535.0
+
+    cbers_colmeia_path = os.path.join(output_seg_dir, f"{code_muni}_CBERS_Segmentos_Colmeia_{ano_fim}.png")
+    cbers_boundaries = mark_boundaries(full_rgb, overview_segments, color=(1, 1, 0)) # Amarelo
+
+    fig, ax = plt.subplots(figsize=(10, 12))
+    ax.imshow(cbers_boundaries)
+    ax.axis('off')
+    plt.savefig(cbers_colmeia_path, bbox_inches='tight', pad_inches=0, dpi=300)
+    plt.close()
+    print(f" -> Imagem geral do CBERS com superpixels salva em: {cbers_colmeia_path}")
+
+    print(f"\n[SUCESSO] Processo de segmentação e geração de imagens concluído com êxito!")
 
 if __name__ == "__main__":
     main()
