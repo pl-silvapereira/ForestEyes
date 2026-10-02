@@ -12,6 +12,7 @@ from shapely.ops import unary_union
 from skimage.segmentation import slic
 import matplotlib.pyplot as plt
 from dotenv import load_dotenv
+import geobr  # Adicionado para obter o limite exato do município
 
 def main():
     if len(sys.argv) < 4:
@@ -35,7 +36,7 @@ def main():
     os.makedirs(output_seg_dir, exist_ok=True)
 
     print("=" * 80)
-    print(f"🔬 INICIANDO PROCESSAMENTO DE SEGMENTAÇÃO E ZOONIVERSE ({ano_fim}) - CORREÇÃO DE MEMÓRIA")
+    print(f"🔬 INICIANDO PROCESSAMENTO DE SEGMENTAÇÃO E ZOONIVERSE ({ano_fim})")
     print("=" * 80)
 
     path_shp_class = os.path.join(project_root, "data", "output", "classification", ano_fim, f"{code_muni}_Classificado_ForestEyes_{ano_fim}.shp")
@@ -112,8 +113,6 @@ def main():
 
     print("Gerando imagem PNG da Matriz (aplicando sub-amostragem para não exceder a memória RAM)...")
     path_matriz_png = os.path.join(output_seg_dir, f"{code_muni}_Matriz_Segmentacao_{ano_fim}.png")
-    
-    # Sub-amostragem dinâmica: reduz imagens gigantes para ~1500 pixels de largura máxima
     passo = max(1, cbers_shape[1] // 1500)
     matriz_reduzida = matriz_segmentacao[::passo, ::passo]
 
@@ -124,10 +123,61 @@ def main():
     plt.close('all')
     print(f" -> Imagem PNG da Matriz salva em: {path_matriz_png}")
 
-    # Liberação forçada de memória RAM
     del matriz_reduzida
-    del matriz_segmentacao
     gc.collect()
+
+    # -----------------------------------------------------------------------------------
+    # NOVO: GERAÇÃO DO SHAPEFILE BINÁRIO E QML (VERDE E VERMELHO)
+    # -----------------------------------------------------------------------------------
+    print("\nGerando Shapefile Binário (Segmentar = Verde, Não Segmentar = Vermelho)...")
+    gdf_muni = geobr.read_municipality(code_muni=int(code_muni), year=2022)
+    gdf_muni = gdf_muni.to_crs(cbers_crs)
+    limite_cidade = gdf_muni.geometry.values[0]
+
+    # A área "Não Segmentar" é o limite da cidade menos as áreas "Segmentar"
+    geom_nao_segmentar = limite_cidade.difference(geometria_unificada)
+
+    gdf_binario = gpd.GeoDataFrame({
+        'Categoria': ['Segmentar', 'Não Segmentar'],
+        'geometry': [geometria_unificada, geom_nao_segmentar]
+    }, crs=cbers_crs)
+
+    gdf_binario = gdf_binario[~gdf_binario.geometry.is_empty]
+    # Quebra multipolígonos para compatibilidade ideal com visualizadores SIG
+    gdf_binario = gdf_binario.explode(index_parts=False).reset_index(drop=True)
+
+    path_shp_binario = os.path.join(output_seg_dir, f"{code_muni}_Mapa_Binario_Segmentacao_{ano_fim}.shp")
+    gdf_binario.to_file(path_shp_binario)
+
+    # Cria o arquivo QML para colorir automaticamente no QGIS
+    path_qml_binario = os.path.join(output_seg_dir, f"{code_muni}_Mapa_Binario_Segmentacao_{ano_fim}.qml")
+    qml_content = """
+
+  
+    
+      
+      
+    
+    
+      
+        
+          
+          
+        
+      
+      
+        
+          
+          
+        
+      
+    
+  
+"""
+    with open(path_qml_binario, 'w', encoding='utf-8') as f:
+        f.write(qml_content)
+    print(f" -> Shapefile e QML binários salvos: {path_shp_binario}")
+    # -----------------------------------------------------------------------------------
 
     qtp_pixels = int(np.sum(mask_segmentar == 1))
     qtp_ha = qtp_pixels * pixel_area_ha
@@ -161,6 +211,11 @@ def main():
         f.write("=" * 80 + "\n")
     print(f" -> Relatório gerado em: {relatorio_txt_path}")
 
+    # Limpeza forte de memória antes do processamento intensivo do SLIC
+    del mask_segmentar
+    del matriz_segmentacao
+    gc.collect()
+
     print("\nExecutando segmentação por superpixels (SLIC) em blocos (acompanhe o progresso abaixo)...")
     zooniverse_img_dir = os.path.join(output_seg_dir, "zooniverse_patches")
     os.makedirs(zooniverse_img_dir, exist_ok=True)
@@ -170,14 +225,14 @@ def main():
     global_seg_id = 1
     bloco_contador = 1
 
-    with rasterio.open(path_cbers) as src_cbers, rasterio.open(path_ndvi) as src_ndvi_file:
+    with rasterio.open(path_cbers) as src_cbers, rasterio.open(path_ndvi) as src_ndvi_file, rasterio.open(path_matriz_tif) as src_mask:
         for y in range(0, height, block_size):
             for x in range(0, width, block_size):
                 w_width = min(block_size, width - x)
                 w_height = min(block_size, height - y)
                 window = Window(x, y, w_width, w_height)
 
-                mask_block = mask_segmentar[y:y+w_height, x:x+w_width]
+                mask_block = src_mask.read(1, window=window)
                 if np.sum(mask_block) == 0:
                     continue
 
@@ -250,7 +305,7 @@ def main():
                 break
 
     print(f"\n[SUCESSO] Processo concluído com êxito!")
-    print(f"-> Patches salvos em: {zooniverse_img_dir}")
+    print(f"-> Patches e Shapefiles salvos na pasta: {output_seg_dir}")
 
 if __name__ == "__main__":
     main()
