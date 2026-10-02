@@ -35,7 +35,7 @@ def main():
     os.makedirs(output_seg_dir, exist_ok=True)
 
     print("=" * 80)
-    print(f"🔬 INICIANDO PROCESSAMENTO DE SEGMENTAÇÃO E ZOONIVERSE ({ano_fim}) - MODO OTIMIZADO")
+    print(f"🔬 INICIANDO PROCESSAMENTO DE SEGMENTAÇÃO E ZOONIVERSE ({ano_fim}) - COM LOGS")
     print("=" * 80)
 
     path_shp_class = os.path.join(project_root, "data", "output", "classification", ano_fim, f"{code_muni}_Classificado_ForestEyes_{ano_fim}.shp")
@@ -86,7 +86,6 @@ def main():
         gdf_segmentar = gdf_segmentar.to_crs(cbers_crs)
 
     print("Otimizando e unificando geometrias para acelerar a rasterização...")
-    # Dissolve todas as geometrias em um único bloco limpo/unificado para evitar sobrecarga no rasterize
     geometria_unificada = unary_union(gdf_segmentar.geometry.buffer(0))
     shapes_seg = [(geometria_unificada, 1)]
 
@@ -104,7 +103,6 @@ def main():
 
     matriz_segmentacao = np.where(mask_segmentar == 1, 1, 0).astype(np.uint8)
 
-    # 1. Salvar Matriz GeoTIFF e PNG correspondente
     path_matriz_tif = os.path.join(output_seg_dir, f"{code_muni}_Matriz_Segmentacao_{ano_fim}.tif")
     meta_matriz = cbers_meta.copy()
     meta_matriz.update(count=1, dtype=rasterio.uint8, nodata=255)
@@ -132,7 +130,6 @@ def main():
     print(f" - Não Segmentar: {nao_seg_pixels} pixels | {nao_seg_ha:.2f} ha")
     print(f" - QTS (Quantidade Total de Segmentos estimados): {qts}")
 
-    # Relatório TXT
     relatorio_txt_path = os.path.join(reports_dir, f"{code_muni}_relatorio_segmentacao_{ano_fim}.txt")
     with open(relatorio_txt_path, 'w', encoding='utf-8') as f:
         f.write("=" * 80 + "\n")
@@ -153,14 +150,15 @@ def main():
         f.write("=" * 80 + "\n")
     print(f" -> Relatório gerado em: {relatorio_txt_path}")
 
-    # 4. Segmentação em Blocos Seguros com Limpeza Ativa de Memória (GC)
-    print("\nExecutando segmentação por superpixels (SLIC) em blocos controlados...")
+    # 4. Segmentação em Blocos com rastreamento visual no console
+    print("\nExecutando segmentação por superpixels (SLIC) em blocos (acompanhe o progresso abaixo)...")
     zooniverse_img_dir = os.path.join(output_seg_dir, "zooniverse_patches")
     os.makedirs(zooniverse_img_dir, exist_ok=True)
 
     block_size = 1024
     height, width = cbers_shape
     global_seg_id = 1
+    bloco_contador = 1
 
     with rasterio.open(path_cbers) as src_cbers, rasterio.open(path_ndvi) as src_ndvi_file:
         for y in range(0, height, block_size):
@@ -172,6 +170,9 @@ def main():
                 mask_block = mask_segmentar[y:y+w_height, x:x+w_width]
                 if np.sum(mask_block) == 0:
                     continue
+
+                print(f" -> Processando bloco {bloco_contador} (x={x}, y={y})...")
+                bloco_contador += 1
 
                 r = src_cbers.read(1, window=window)
                 g = src_cbers.read(2, window=window)
@@ -230,7 +231,7 @@ def main():
                     plt.close('all')
 
                     global_seg_id += 1
-                    if global_seg_id > 30:  # Limite seguro para teste
+                    if global_seg_id > 30:  # Limite seguro inicial de patches
                         break
                 
                 gc.collect()
