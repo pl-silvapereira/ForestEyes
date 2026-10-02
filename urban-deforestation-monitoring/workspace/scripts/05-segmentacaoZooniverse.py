@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import gc
 import numpy as np
 import pandas as pd
 import rasterio
@@ -15,7 +16,6 @@ def main():
     if len(sys.argv) < 4:
         print("❌ Erro: Parâmetros insuficientes.")
         print("Uso correto: python 05-segmentacaoZooniverse.py   ")
-        print("Exemplo: python 05-segmentacaoZooniverse.py 3549904 2020 2024")
         sys.exit(1)
 
     code_muni = str(sys.argv[1])
@@ -34,7 +34,7 @@ def main():
     os.makedirs(output_seg_dir, exist_ok=True)
 
     print("=" * 80)
-    print(f"🔬 INICIANDO PROCESSAMENTO DE SEGMENTAÇÃO E ZOONIVERSE ({ano_fim})")
+    print(f"🔬 INICIANDO PROCESSAMENTO DE SEGMENTAÇÃO E ZOONIVERSE ({ano_fim}) - MODO ESTÁVEL")
     print("=" * 80)
 
     path_shp_class = os.path.join(project_root, "data", "output", "classification", ano_fim, f"{code_muni}_Classificado_ForestEyes_{ano_fim}.shp")
@@ -113,7 +113,7 @@ def main():
     ax.imshow(matriz_segmentacao, cmap='gray', interpolation='nearest')
     ax.axis('off')
     plt.savefig(path_matriz_png, bbox_inches='tight', pad_inches=0, dpi=300)
-    plt.close()
+    plt.close('all')
     print(f" -> Imagem PNG da Matriz salva em: {path_matriz_png}")
 
     qtp_pixels = int(np.sum(mask_segmentar == 1))
@@ -149,7 +149,7 @@ def main():
         f.write("=" * 80 + "\n")
     print(f" -> Relatório gerado em: {relatorio_txt_path}")
 
-    # 4. Segmentação em Blocos Seguros e Geração de Amostras Zooniverse
+    # 4. Segmentação em Blocos Seguros com Limpeza Ativa de Memória (GC)
     print("\nExecutando segmentação por superpixels (SLIC) em blocos controlados...")
     zooniverse_img_dir = os.path.join(output_seg_dir, "zooniverse_patches")
     os.makedirs(zooniverse_img_dir, exist_ok=True)
@@ -176,7 +176,7 @@ def main():
 
                 patch_rgb = np.dstack([r, g, b]).astype(np.float32) / 65535.0
                 block_qtp = np.sum(mask_block == 1)
-                block_n_segs = max(2, min(40, int(block_qtp / qps)))
+                block_n_segs = max(2, min(30, int(block_qtp / qps)))
 
                 try:
                     segments_block = slic(patch_rgb, n_segments=block_n_segs, compactness=10, sigma=1, mask=(mask_block == 1))
@@ -215,7 +215,7 @@ def main():
                     ax.contour(sub_seg, colors='yellow', linewidths=1.5)
                     ax.axis('off')
                     plt.savefig(os.path.join(zooniverse_img_dir, f"patch_cbers_seg_{global_seg_id}.png"), bbox_inches='tight', pad_inches=0, dpi=150)
-                    plt.close()
+                    plt.close('all')
 
                     # Patch NDVI com contorno vermelho
                     fig, ax = plt.subplots(figsize=(4, 4))
@@ -223,14 +223,18 @@ def main():
                     ax.contour(sub_seg, colors='red', linewidths=1.5)
                     ax.axis('off')
                     plt.savefig(os.path.join(zooniverse_img_dir, f"patch_ndvi_seg_{global_seg_id}.png"), bbox_inches='tight', pad_inches=0, dpi=150)
-                    plt.close()
+                    plt.close('all')
 
                     global_seg_id += 1
-                    if global_seg_id > 100:  # Limite seguro para amostras da campanha
+                    if global_seg_id > 30:  # Limite seguro para teste e validação inicial
                         break
-                if global_seg_id > 100:
+                
+                # Coleta de lixo da RAM a cada bloco processado
+                gc.collect()
+
+                if global_seg_id > 30:
                     break
-            if global_seg_id > 100:
+            if global_seg_id > 30:
                 break
 
     print(f"\n[SUCESSO] Processo de segmentação e geração de patches concluído com êxito!")
