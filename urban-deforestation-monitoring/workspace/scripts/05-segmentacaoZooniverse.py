@@ -12,7 +12,7 @@ from shapely.ops import unary_union
 from skimage.segmentation import slic
 import matplotlib.pyplot as plt
 from dotenv import load_dotenv
-import geobr  # Adicionado para obter o limite exato do município
+import geobr
 
 def main():
     if len(sys.argv) < 4:
@@ -127,29 +127,26 @@ def main():
     gc.collect()
 
     # -----------------------------------------------------------------------------------
-    # NOVO: GERAÇÃO DO SHAPEFILE BINÁRIO E QML (VERDE E VERMELHO)
+    # GERAÇÃO DO SHAPEFILE BINÁRIO E QML (SEGMENTAR = VERDE, NÃO SEGMENTAR = VERMELHO)
     # -----------------------------------------------------------------------------------
     print("\nGerando Shapefile Binário (Segmentar = Verde, Não Segmentar = Vermelho)...")
     gdf_muni = geobr.read_municipality(code_muni=int(code_muni), year=2022)
     gdf_muni = gdf_muni.to_crs(cbers_crs)
     limite_cidade = gdf_muni.geometry.values[0]
 
-    # A área "Não Segmentar" é o limite da cidade menos as áreas "Segmentar"
     geom_nao_segmentar = limite_cidade.difference(geometria_unificada)
 
     gdf_binario = gpd.GeoDataFrame({
-        'Categoria': ['Segmentar', 'Não Segmentar'],
-        'geometry': [geometria_unificada, geom_nao_segmentar]
+        'Categoria': ['Não Segmentar', 'Segmentar'],
+        'geometry': [geom_nao_segmentar, geometria_unificada]
     }, crs=cbers_crs)
 
     gdf_binario = gdf_binario[~gdf_binario.geometry.is_empty]
-    # Quebra multipolígonos para compatibilidade ideal com visualizadores SIG
     gdf_binario = gdf_binario.explode(index_parts=False).reset_index(drop=True)
 
     path_shp_binario = os.path.join(output_seg_dir, f"{code_muni}_Mapa_Binario_Segmentacao_{ano_fim}.shp")
     gdf_binario.to_file(path_shp_binario)
 
-    # Cria o arquivo QML para colorir automaticamente no QGIS
     path_qml_binario = os.path.join(output_seg_dir, f"{code_muni}_Mapa_Binario_Segmentacao_{ano_fim}.qml")
     qml_content = """
 
@@ -211,7 +208,6 @@ def main():
         f.write("=" * 80 + "\n")
     print(f" -> Relatório gerado em: {relatorio_txt_path}")
 
-    # Limpeza forte de memória antes do processamento intensivo do SLIC
     del mask_segmentar
     del matriz_segmentacao
     gc.collect()
