@@ -60,6 +60,7 @@ def main():
     print("Carregando shapefiles de classificação e mudanças...")
     gdf_class = gpd.read_file(path_shp_class)
     
+    # 1. Filtrar classes de interesse para "Segmentar"
     classes_floresta_atual = ['Floresta', 'Floresta Antrópica']
     gdf_segmentar_base = gdf_class[gdf_class['class_name'].isin(classes_floresta_atual)].copy()
     gdf_segmentar_base['tipo_seg'] = 'Segmentar'
@@ -86,7 +87,7 @@ def main():
     if gdf_segmentar.crs != cbers_crs:
         gdf_segmentar = gdf_segmentar.to_crs(cbers_crs)
 
-    print("Otimizando e unificando geometrias para acelerar a rasterização...")
+    print("Otimizando e unificando geometrias de segmentação...")
     geometria_unificada = unary_union(gdf_segmentar.geometry.buffer(0))
     shapes_seg = [(geometria_unificada, 1)]
 
@@ -111,7 +112,7 @@ def main():
         dst.write(matriz_segmentacao, 1)
     print(f" -> Matriz GeoTIFF salva em: {path_matriz_tif}")
 
-    print("Gerando imagem PNG da Matriz (aplicando sub-amostragem para não exceder a memória RAM)...")
+    print("Gerando imagem PNG da Matriz...")
     path_matriz_png = os.path.join(output_seg_dir, f"{code_muni}_Matriz_Segmentacao_{ano_fim}.png")
     passo = max(1, cbers_shape[1] // 1500)
     matriz_reduzida = matriz_segmentacao[::passo, ::passo]
@@ -127,15 +128,17 @@ def main():
     gc.collect()
 
     # -----------------------------------------------------------------------------------
-    # GERAÇÃO DO SHAPEFILE BINÁRIO E QML (SEGMENTAR = VERDE, NÃO SEGMENTAR = VERMELHO)
+    # GERAÇÃO DO SHAPEFILE BINÁRIO (NÃO SEGMENTAR = AMARELO, SEGMENTAR = VERDE)
     # -----------------------------------------------------------------------------------
-    print("\nGerando Shapefile Binário (Segmentar = Verde, Não Segmentar = Vermelho)...")
+    print("\nGerando Shapefile Binário (Segmentar = Verde, Não Segmentar = Amarelo)...")
     gdf_muni = geobr.read_municipality(code_muni=int(code_muni), year=2022)
     gdf_muni = gdf_muni.to_crs(cbers_crs)
     limite_cidade = gdf_muni.geometry.values[0]
 
+    # O "Não Segmentar" preenche todo o contorno geopolítico menos as áreas de segmentação
     geom_nao_segmentar = limite_cidade.difference(geometria_unificada)
 
+    # Ordem correta para desenho: Não Segmentar embaixo, Segmentar em cima
     gdf_binario = gpd.GeoDataFrame({
         'Categoria': ['Não Segmentar', 'Segmentar'],
         'geometry': [geom_nao_segmentar, geometria_unificada]
@@ -147,6 +150,7 @@ def main():
     path_shp_binario = os.path.join(output_seg_dir, f"{code_muni}_Mapa_Binario_Segmentacao_{ano_fim}.shp")
     gdf_binario.to_file(path_shp_binario)
 
+    # Arquivo QML configurado com Amarelo para Não Segmentar e Verde para Segmentar
     path_qml_binario = os.path.join(output_seg_dir, f"{code_muni}_Mapa_Binario_Segmentacao_{ano_fim}.qml")
     qml_content = """
 
@@ -212,7 +216,7 @@ def main():
     del matriz_segmentacao
     gc.collect()
 
-    print("\nExecutando segmentação por superpixels (SLIC) em blocos (acompanhe o progresso abaixo)...")
+    print("\nExecutando segmentação por superpixels (SLIC) em blocos...")
     zooniverse_img_dir = os.path.join(output_seg_dir, "zooniverse_patches")
     os.makedirs(zooniverse_img_dir, exist_ok=True)
 
