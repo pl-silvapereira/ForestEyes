@@ -8,8 +8,8 @@ from dotenv import load_dotenv
 
 def gerar_estilo_qml_segmentacao(caminho_qml):
     """
-    Gera o arquivo QML de forma dinâmica e automatizada seguindo o padrão
-    do projeto (exatamente como no script de classificação).
+    Gera o arquivo QML seguindo rigorosamente o padrão limpo e funcional
+    utilizado no script de classificação do projeto.
     """
     classes_cores = {
         'Segmentar': '#33a02c',      # Verde
@@ -21,25 +21,19 @@ def gerar_estilo_qml_segmentacao(caminho_qml):
         h = cor.lstrip('#')
         r, g, b = tuple(int(h[j:j+2], 16) for j in (0, 2, 4))
         symbol_name = str(i)
-        categorias += f'      \n'
+        categorias += f'    \n'
         simbolos += f"""
+    
       
         
-          
-          
-          
-          
-          
-          
-          
         
-      """
+      
+    """
 
     conteudo_qml = f"""
 
   
-    
-{categorias    }
+    {categorias}    
     {simbolos}
     
   
