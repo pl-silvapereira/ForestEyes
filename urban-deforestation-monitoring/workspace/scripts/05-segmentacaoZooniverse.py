@@ -12,7 +12,7 @@ def gerar_estilo_qml_automatico(caminho_qml, metadata):
         h = cor.lstrip('#')
         r, g, b = tuple(int(h[j:j+2], 16) for j in (0, 2, 4))
         symbol_name = str(i)
-        categorias += f'    \n'
+        categorias += f'\n'
         simbolos += f"""
     
       
@@ -24,9 +24,8 @@ def gerar_estilo_qml_automatico(caminho_qml, metadata):
     conteudo_qml = f"""
 
   
-    {categorias}    
+    {categorias}
     {simbolos}
-    
   
 """
     
@@ -47,7 +46,8 @@ def main():
     load_dotenv()
     project_root = os.getenv("PROJECT_ROOT")
     if not project_root:
-        raise ValueError("A variável PROJECT_ROOT não foi encontrada.")
+        diretorio_scripts = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(diretorio_scripts)
 
     output_seg_dir = os.path.join(project_root, "data", "output", "segmentation", ano_fim)
     os.makedirs(output_seg_dir, exist_ok=True)
