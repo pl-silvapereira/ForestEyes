@@ -6,32 +6,36 @@ from shapely.ops import unary_union
 import geobr
 from dotenv import load_dotenv
 
-def gerar_estilo_qml_automatico(caminho_qml, metadata):
-    categorias, simbolos = "", ""
-    for i, (nome, cor) in enumerate(metadata.items()):
-        h = cor.lstrip('#')
-        r, g, b = tuple(int(h[j:j+2], 16) for j in (0, 2, 4))
-        symbol_name = str(i)
-        categorias += f'\n'
-        simbolos += f"""
- 
- 
- 
- 
- 
- """
-
-    conteudo_qml = f"""
-
- 
- \n{categorias}
- {simbolos}\n 
- 
-"""
+def gerar_estilo_qml_garantido(caminho_qml):
+    # Usando lista de strings rígida para evitar QUALQUER erro de formatação/corte no Colab
+    linhas_qml = [
+        "",
+        "",
+        "  ",
+        "    ",
+        "      ",
+        "      ",
+        "    ",
+        "    ",
+        "      ",
+        "        ",
+        "          ",
+        "          ",
+        "        ",
+        "      ",
+        "      ",
+        "        ",
+        "          ",
+        "          ",
+        "        ",
+        "      ",
+        "    ",
+        "  ",
+        ""
+    ]
     
-    # Gravação forçada para evitar que o arquivo fique com 0 KB no Drive/Disco
     with open(caminho_qml, 'w', encoding='utf-8') as f:
-        f.write(conteudo_qml)
+        f.write("\n".join(linhas_qml))
         f.flush()
         os.fsync(f.fileno())
 
@@ -62,15 +66,16 @@ def main():
     path_shp_mudancas = os.path.join(project_root, "data", "output", "analysis", "mudancas", f"{code_muni}_Mudancas_{ano_inicio}_vs_{ano_fim}.shp")
 
     if not os.path.exists(path_shp_class):
-        print(f"[ERRO CRÍTICO] Shapefile de classificação não encontrado: {path_shp_class}")
+        print(f"[ERRO CRÍTICO] Shapefile não encontrado: {path_shp_class}")
         sys.exit(1)
 
     print("1. Lendo shapefile de classificação...")
     gdf_class = gpd.read_file(path_shp_class)
     gdf_floresta = gdf_class[gdf_class['class_name'].isin(['Floresta', 'Floresta Antrópica'])].copy()
-    gdf_floresta['class_name'] = 'Segmentar'
-
-    lista_segmentar = [gdf_floresta[['geometry', 'class_name']]]
+    
+    # IMPORTANTE: Coluna curta 'classe' para evitar truncamento no Shapefile (.dbf)
+    gdf_floresta['classe'] = 'Segmentar'
+    lista_segmentar = [gdf_floresta[['geometry', 'classe']]]
 
     if os.path.exists(path_shp_mudancas):
         print("2. Lendo shapefile de mudanças...")
@@ -85,22 +90,24 @@ def main():
         if 'transicao' in gdf_mudancas.columns:
             gdf_filt = gdf_mudancas[gdf_mudancas['transicao'].isin(transicoes)].copy()
             if not gdf_filt.empty:
-                gdf_filt['class_name'] = 'Segmentar'
-                lista_segmentar.append(gdf_filt[['geometry', 'class_name']])
+                gdf_filt['classe'] = 'Segmentar'
+                lista_segmentar.append(gdf_filt[['geometry', 'classe']])
 
     gdf_seg_total = gpd.GeoDataFrame(pd.concat(lista_segmentar, ignore_index=True), crs=gdf_class.crs)
 
     print("3. Obtendo contorno geopolítico via geobr...")
     gdf_muni = geobr.read_municipality(code_muni=int(code_muni), year=2022)
     gdf_muni = gdf_muni.to_crs(gdf_seg_total.crs)
-    limite = gdf_muni.geometry.unary_union
+    
+    # Atualizado para union_all() para evitar o DeprecationWarning no console
+    limite = gdf_muni.geometry.union_all()
 
     print("4. Processando áreas...")
     geom_seg = unary_union(gdf_seg_total.geometry.buffer(0))
     geom_nao_seg = limite.difference(geom_seg)
 
     gdf_binario = gpd.GeoDataFrame({
-        'class_name': ['Segmentar', 'Não Segmentar'],
+        'classe': ['Segmentar', 'Nao_Segmentar'],
         'geometry': [geom_seg, geom_nao_seg]
     }, crs=gdf_seg_total.crs)
 
@@ -115,18 +122,14 @@ def main():
     gdf_binario.to_file(path_shp, encoding='utf-8')
     
     print("6. Gerando arquivo de estilo QML...")
-    metadata_estilo = {
-        'Segmentar': '#33a02c',       # Verde
-        'Não Segmentar': '#ffe600'    # Amarelo
-    }
-    gerar_estilo_qml_automatico(path_qml, metadata_estilo)
+    gerar_estilo_qml_garantido(path_qml)
 
-    # Validador de gravação
+    # Validador de gravação real
     tamanho_qml = os.path.getsize(path_qml)
-    if tamanho_qml == 0:
-        print(f"\n❌ ERRO GRAVE: O arquivo QML foi criado com 0 KB! Verifique o sincronismo da sua pasta.")
+    if tamanho_qml < 500:
+        print(f"\n❌ ERRO GRAVE: O arquivo QML foi criado com {tamanho_qml} bytes! Isso não vai funcionar no QGIS.")
     else:
-        print(f"\n✅ SUCESSO! Arquivo QML gravado corretamente (Tamanho: {tamanho_qml} bytes).")
+        print(f"\n✅ SUCESSO ABSOLUTO! Arquivo QML gravado corretamente (Tamanho real: {tamanho_qml} bytes).")
         print(f"✅ Shapefile pronto em: {path_shp}")
 
 if __name__ == "__main__":
