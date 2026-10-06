@@ -6,6 +6,35 @@ from shapely.ops import unary_union
 import geobr
 from dotenv import load_dotenv
 
+def gerar_estilo_qml_automatico(caminho_qml, metadata):
+    categorias, simbolos = "", ""
+    for i, (nome, cor) in enumerate(metadata.items()):
+        h = cor.lstrip('#')
+        r, g, b = tuple(int(h[j:j+2], 16) for j in (0, 2, 4))
+        symbol_name = str(i)
+        categorias += f'\n'
+        simbolos += f"""
+ 
+ 
+ 
+ 
+ 
+ """
+
+    conteudo_qml = f"""
+
+ 
+ \n{categorias}
+ {simbolos}\n 
+ 
+"""
+    
+    # Gravação forçada para evitar que o arquivo fique com 0 KB no Drive/Disco
+    with open(caminho_qml, 'w', encoding='utf-8') as f:
+        f.write(conteudo_qml)
+        f.flush()
+        os.fsync(f.fileno())
+
 def main():
     if len(sys.argv) < 4:
         print("❌ Erro: Parâmetros insuficientes.")
@@ -33,7 +62,7 @@ def main():
     path_shp_mudancas = os.path.join(project_root, "data", "output", "analysis", "mudancas", f"{code_muni}_Mudancas_{ano_inicio}_vs_{ano_fim}.shp")
 
     if not os.path.exists(path_shp_class):
-        print(f"[ERRO CRÍTICO] Shapefile não encontrado: {path_shp_class}")
+        print(f"[ERRO CRÍTICO] Shapefile de classificação não encontrado: {path_shp_class}")
         sys.exit(1)
 
     print("1. Lendo shapefile de classificação...")
@@ -71,7 +100,7 @@ def main():
     geom_nao_seg = limite.difference(geom_seg)
 
     gdf_binario = gpd.GeoDataFrame({
-        'class_name': ['Segmentar', 'Nao_Segmentar'],
+        'class_name': ['Segmentar', 'Não Segmentar'],
         'geometry': [geom_seg, geom_nao_seg]
     }, crs=gdf_seg_total.crs)
 
@@ -82,39 +111,23 @@ def main():
     path_shp = os.path.join(output_seg_dir, f"{nome_base}.shp")
     path_qml = os.path.join(output_seg_dir, f"{nome_base}.qml")
 
-    # Salva o Shapefile
+    print("5. Salvando Shapefile...")
     gdf_binario.to_file(path_shp, encoding='utf-8')
     
-    # TEXTO BRUTO E ESTÁTICO DO QML (Sem variáveis ou f-strings para evitar erro na cópia)
-    qml_estatico = """
+    print("6. Gerando arquivo de estilo QML...")
+    metadata_estilo = {
+        'Segmentar': '#33a02c',       # Verde
+        'Não Segmentar': '#ffe600'    # Amarelo
+    }
+    gerar_estilo_qml_automatico(path_qml, metadata_estilo)
 
-  
-    
-      
-      
-    
-    
-      
-        
-          
-          
-        
-      
-      
-        
-          
-          
-        
-      
-    
-  
-"""
-
-    with open(path_qml, 'w', encoding='utf-8') as f:
-        f.write(qml_estatico.strip())
-
-    print(f"✅ Concluído! Shapefile: {path_shp}")
-    print(f"✅ Arquivo QML válido gerado com sucesso: {path_qml}")
+    # Validador de gravação
+    tamanho_qml = os.path.getsize(path_qml)
+    if tamanho_qml == 0:
+        print(f"\n❌ ERRO GRAVE: O arquivo QML foi criado com 0 KB! Verifique o sincronismo da sua pasta.")
+    else:
+        print(f"\n✅ SUCESSO! Arquivo QML gravado corretamente (Tamanho: {tamanho_qml} bytes).")
+        print(f"✅ Shapefile pronto em: {path_shp}")
 
 if __name__ == "__main__":
     main()
