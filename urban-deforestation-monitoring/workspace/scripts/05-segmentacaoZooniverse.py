@@ -30,7 +30,6 @@ def main():
     print(f"🔬 SCRIPT 05 - GERAÇÃO DO MAPA BINÁRIO DE SEGMENTAÇÃO ({ano_fim})")
     print("=" * 80)
 
-    # Caminhos dos arquivos de entrada
     path_shp_class = os.path.join(project_root, "data", "output", "classification", ano_fim, f"{code_muni}_Classificado_ForestEyes_{ano_fim}.shp")
     path_shp_mudancas = os.path.join(project_root, "data", "output", "analysis", "mudancas", f"{code_muni}_Mudancas_{ano_inicio}_vs_{ano_fim}.shp")
 
@@ -38,15 +37,15 @@ def main():
         print(f"[ERRO CRÍTICO] Shapefile de classificação não encontrado: {path_shp_class}")
         sys.exit(1)
 
-    print("1. Lendo shapefile de classificação e filtrando APENAS a categoria 'Floresta'...")
+    print("1. Lendo shapefile de classificação e filtrando 'Floresta' e 'Floresta Antrópica'...")
     gdf_class = gpd.read_file(path_shp_class)
-    gdf_floresta = gdf_class[gdf_class['class_name'] == 'Floresta'].copy()
-    gdf_floresta['tipo_seg'] = 'Segmentar'
+    gdf_floresta_base = gdf_class[gdf_class['class_name'].isin(['Floresta', 'Floresta Antrópica'])].copy()
+    gdf_floresta_base['tipo_seg'] = 'Segmentar'
 
-    lista_segmentar = [gdf_floresta[['geometry', 'tipo_seg']]]
+    lista_segmentar = [gdf_floresta_base[['geometry', 'tipo_seg']]]
 
     if os.path.exists(path_shp_mudancas):
-        print("2. Lendo shapefile de mudanças e filtrando as categorias de transição especificadas...")
+        print("2. Lendo shapefile de mudanças e filtrando as categorias de transição...")
         gdf_mudancas = gpd.read_file(path_shp_mudancas)
         transicoes_desejadas = [
             'Floresta -> Agropecuaria (Campos, Lavouras)',
@@ -61,7 +60,6 @@ def main():
                 gdf_mud_filt['tipo_seg'] = 'Segmentar'
                 lista_segmentar.append(gdf_mud_filt[['geometry', 'tipo_seg']])
 
-    # Unir todas as geometrias de segmentação
     gdf_segmentar_total = gpd.GeoDataFrame(pd.concat(lista_segmentar, ignore_index=True), crs=gdf_class.crs)
 
     print("3. Obtendo contorno geopolítico municipal via geobr...")
@@ -69,13 +67,10 @@ def main():
     gdf_muni = gdf_muni.to_crs(gdf_segmentar_total.crs)
     limite_municipal = gdf_muni.geometry.unary_union
 
-    print("4. Processando áreas de Segmentar e preenchendo o restante como Não Segmentar...")
+    print("4. Processando áreas de Segmentar e preenchendo o Não Segmentar...")
     geometria_segmentar_unificada = unary_union(gdf_segmentar_total.geometry.buffer(0))
-    
-    # Preenche o contorno geopolítico sem sobrepor o que foi segmentado
     geom_nao_segmentar = limite_municipal.difference(geometria_segmentar_unificada)
 
-    # Montar GeoDataFrame final com as duas categorias (Não Segmentar na base, Segmentar por cima)
     gdf_binario = gpd.GeoDataFrame({
         'Categoria': ['Não Segmentar', 'Segmentar'],
         'geometry': [geom_nao_segmentar, geometria_segmentar_unificada]
@@ -84,14 +79,14 @@ def main():
     gdf_binario = gdf_binario[~gdf_binario.geometry.is_empty]
     gdf_binario = gdf_binario.explode(index_parts=False).reset_index(drop=True)
 
-    # Salvar Shapefile
-    path_shp_out = os.path.join(output_seg_dir, f"{code_muni}_Segmentar_vs_NaoSegmentar_{ano_fim}.shp")
-    gdf_binario.to_file(path_shp_out)
-    print(f"✅ Shapefile salvo com sucesso em:\n   -> {path_shp_out}")
+    nome_base = f"{code_muni}_Segmentar_vs_NaoSegmentar_{ano_fim}"
+    path_shp_out = os.path.join(output_seg_dir, f"{nome_base}.shp")
+    path_qml_out = os.path.join(output_seg_dir, f"{nome_base}.qml")
 
-    # Salvar QML (Não Segmentar = Amarelo, Segmentar = Verde)
-    path_qml_out = os.path.join(output_seg_dir, f"{code_muni}_Segmentar_vs_NaoSegmentar_{ano_fim}.qml")
-    qml_content = """
+    gdf_binario.to_file(path_shp_out)
+    print(f"✅ Shapefile salvo em:\n   -> {path_shp_out}")
+
+    qml_content = f"""
 
   
     
@@ -103,10 +98,20 @@ def main():
         
           
           
+          
+          
+          
+          
+          
         
       
       
         
+          
+          
+          
+          
+          
           
           
         
@@ -114,9 +119,10 @@ def main():
     
   
 """
+
     with open(path_qml_out, 'w', encoding='utf-8') as f:
         f.write(qml_content)
-    print(f"✅ Arquivo QML salvo com sucesso em:\n   -> {path_qml_out}")
+    print(f"✅ Arquivo QML sincronizado salvo em:\n   -> {path_qml_out}")
     print("🎉 Processo concluído com êxito!")
 
 if __name__ == "__main__":
