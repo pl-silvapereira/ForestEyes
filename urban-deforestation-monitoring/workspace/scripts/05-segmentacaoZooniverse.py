@@ -6,32 +6,6 @@ from shapely.ops import unary_union
 import geobr
 from dotenv import load_dotenv
 
-def gerar_estilo_qml_automatico(caminho_qml, metadata):
-    categorias, simbolos = "", ""
-    for i, (nome, cor) in enumerate(metadata.items()):
-        h = cor.lstrip('#')
-        r, g, b = tuple(int(h[j:j+2], 16) for j in (0, 2, 4))
-        symbol_name = str(i)
-        categorias += f'\n'
-        simbolos += f"""
- 
- 
- 
- 
- 
- """
-
-    conteudo_qml = f"""
-
- 
- {categorias}
- {simbolos}
- 
-"""
-    
-    with open(caminho_qml, 'w', encoding='utf-8') as f:
-        f.write(conteudo_qml)
-
 def main():
     if len(sys.argv) < 4:
         print("❌ Erro: Parâmetros insuficientes.")
@@ -108,15 +82,39 @@ def main():
     path_shp = os.path.join(output_seg_dir, f"{nome_base}.shp")
     path_qml = os.path.join(output_seg_dir, f"{nome_base}.qml")
 
+    # Salva o Shapefile
     gdf_binario.to_file(path_shp, encoding='utf-8')
     
-    metadata = {
-        'Segmentar': '#33a02c',
-        'Nao_Segmentar': '#ffe600'
-    }
-    gerar_estilo_qml_automatico(path_qml, metadata)
+    # TEXTO BRUTO E ESTÁTICO DO QML (Sem variáveis ou f-strings para evitar erro na cópia)
+    qml_estatico = """
 
-    print(f"✅ Concluído: {path_shp}")
+  
+    
+      
+      
+    
+    
+      
+        
+          
+          
+        
+      
+      
+        
+          
+          
+        
+      
+    
+  
+"""
+
+    with open(path_qml, 'w', encoding='utf-8') as f:
+        f.write(qml_estatico.strip())
+
+    print(f"✅ Concluído! Shapefile: {path_shp}")
+    print(f"✅ Arquivo QML válido gerado com sucesso: {path_qml}")
 
 if __name__ == "__main__":
     main()
