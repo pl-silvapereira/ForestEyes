@@ -13,7 +13,7 @@ def gerar_estilo_qml_segmentacao(caminho_qml):
     """
     classes_cores = {
         'Segmentar': '#33a02c',      # Verde
-        'Não Segmentar': '#ffe600'   # Amarelo
+        'Nao_Segmentar': '#ffe600'   # Amarelo
     }
     
     categorias, simbolos = "", ""
@@ -75,9 +75,9 @@ def main():
     print("1. Lendo shapefile de classificação e filtrando 'Floresta' e 'Floresta Antrópica'...")
     gdf_class = gpd.read_file(path_shp_class)
     gdf_floresta_base = gdf_class[gdf_class['class_name'].isin(['Floresta', 'Floresta Antrópica'])].copy()
-    gdf_floresta_base['tipo_seg'] = 'Segmentar'
+    gdf_floresta_base['status'] = 'Segmentar'
 
-    lista_segmentar = [gdf_floresta_base[['geometry', 'tipo_seg']]]
+    lista_segmentar = [gdf_floresta_base[['geometry', 'status']]]
 
     if os.path.exists(path_shp_mudancas):
         print("2. Lendo shapefile de mudanças e filtrando as categorias de transição...")
@@ -92,8 +92,8 @@ def main():
         if 'transicao' in gdf_mudancas.columns:
             gdf_mud_filt = gdf_mudancas[gdf_mudancas['transicao'].isin(transicoes_desejadas)].copy()
             if not gdf_mud_filt.empty:
-                gdf_mud_filt['tipo_seg'] = 'Segmentar'
-                lista_segmentar.append(gdf_mud_filt[['geometry', 'tipo_seg']])
+                gdf_mud_filt['status'] = 'Segmentar'
+                lista_segmentar.append(gdf_mud_filt[['geometry', 'status']])
 
     gdf_segmentar_total = gpd.GeoDataFrame(pd.concat(lista_segmentar, ignore_index=True), crs=gdf_class.crs)
 
@@ -102,12 +102,12 @@ def main():
     gdf_muni = gdf_muni.to_crs(gdf_segmentar_total.crs)
     limite_municipal = gdf_muni.geometry.unary_union
 
-    print("4. Processando áreas de Segmentar e preenchendo o Não Segmentar...")
+    print("4. Processando áreas de Segmentar e preenchendo o Nao Segmentar...")
     geometria_segmentar_unificada = unary_union(gdf_segmentar_total.geometry.buffer(0))
     geom_nao_segmentar = limite_municipal.difference(geometria_segmentar_unificada)
 
     gdf_binario = gpd.GeoDataFrame({
-        'Categoria': ['Segmentar', 'Não Segmentar'],
+        'status': ['Segmentar', 'Nao_Segmentar'],
         'geometry': [geometria_segmentar_unificada, geom_nao_segmentar]
     }, crs=gdf_segmentar_total.crs)
 
@@ -118,7 +118,8 @@ def main():
     path_shp_out = os.path.join(output_seg_dir, f"{nome_base}.shp")
     path_qml_out = os.path.join(output_seg_dir, f"{nome_base}.qml")
 
-    gdf_binario.to_file(path_shp_out)
+    # Salvando com codificação utf-8 para garantir compatibilidade com QGIS
+    gdf_binario.to_file(path_shp_out, encoding='utf-8')
     gerar_estilo_qml_segmentacao(path_qml_out)
 
     print(f"✅ Shapefile salvo em:\n   -> {path_shp_out}")
