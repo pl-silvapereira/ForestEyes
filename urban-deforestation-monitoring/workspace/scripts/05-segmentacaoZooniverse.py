@@ -6,6 +6,48 @@ from shapely.ops import unary_union
 import geobr
 from dotenv import load_dotenv
 
+def gerar_estilo_qml_segmentacao(caminho_qml):
+    """
+    Gera o arquivo QML de forma dinâmica e automatizada seguindo o padrão
+    do projeto (exatamente como no script de classificação).
+    """
+    classes_cores = {
+        'Segmentar': '#33a02c',      # Verde
+        'Não Segmentar': '#ffe600'   # Amarelo
+    }
+    
+    categorias, simbolos = "", ""
+    for i, (nome, cor) in enumerate(classes_cores.items()):
+        h = cor.lstrip('#')
+        r, g, b = tuple(int(h[j:j+2], 16) for j in (0, 2, 4))
+        symbol_name = str(i)
+        categorias += f'      \n'
+        simbolos += f"""
+      
+        
+          
+          
+          
+          
+          
+          
+          
+        
+      """
+
+    conteudo_qml = f"""
+
+  
+    
+{categorias    }
+    {simbolos}
+    
+  
+"""
+    
+    with open(caminho_qml, 'w', encoding='utf-8') as f:
+        f.write(conteudo_qml)
+
 def main():
     if len(sys.argv) < 4:
         print("❌ Erro: Parâmetros insuficientes.")
@@ -20,8 +62,7 @@ def main():
     load_dotenv()
     project_root = os.getenv("PROJECT_ROOT")
     if not project_root:
-        diretorio_scripts = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(diretorio_scripts)
+        raise ValueError("A variável PROJECT_ROOT não foi encontrada.")
 
     output_seg_dir = os.path.join(project_root, "data", "output", "segmentation", ano_fim)
     os.makedirs(output_seg_dir, exist_ok=True)
@@ -72,8 +113,8 @@ def main():
     geom_nao_segmentar = limite_municipal.difference(geometria_segmentar_unificada)
 
     gdf_binario = gpd.GeoDataFrame({
-        'Categoria': ['Não Segmentar', 'Segmentar'],
-        'geometry': [geom_nao_segmentar, geometria_segmentar_unificada]
+        'Categoria': ['Segmentar', 'Não Segmentar'],
+        'geometry': [geometria_segmentar_unificada, geom_nao_segmentar]
     }, crs=gdf_segmentar_total.crs)
 
     gdf_binario = gdf_binario[~gdf_binario.geometry.is_empty]
@@ -84,45 +125,10 @@ def main():
     path_qml_out = os.path.join(output_seg_dir, f"{nome_base}.qml")
 
     gdf_binario.to_file(path_shp_out)
+    gerar_estilo_qml_segmentacao(path_qml_out)
+
     print(f"✅ Shapefile salvo em:\n   -> {path_shp_out}")
-
-    qml_content = f"""
-
-  
-    
-      
-      
-    
-    
-      
-        
-          
-          
-          
-          
-          
-          
-          
-        
-      
-      
-        
-          
-          
-          
-          
-          
-          
-          
-        
-      
-    
-  
-"""
-
-    with open(path_qml_out, 'w', encoding='utf-8') as f:
-        f.write(qml_content)
-    print(f"✅ Arquivo QML sincronizado salvo em:\n   -> {path_qml_out}")
+    print(f"✅ Arquivo QML gerado automaticamente em:\n   -> {path_qml_out}")
     print("🎉 Processo concluído com êxito!")
 
 if __name__ == "__main__":
