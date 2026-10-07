@@ -31,7 +31,6 @@ def main():
         diretorio_scripts = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(diretorio_scripts)
 
-    # Diretórios e caminhos
     output_seg_dir = os.path.join(project_root, "data", "output", "segmentation", ano_fim)
     output_report_dir = os.path.join(project_root, "reports")
     os.makedirs(output_report_dir, exist_ok=True)
@@ -46,12 +45,11 @@ def main():
         print(f"[ERRO CRÍTICO] Imagem CBERS não encontrada: {path_cbers}")
         sys.exit(1)
 
-    print("=" * 80)
-    print(f"📄 SCRIPT 06 - RELATÓRIO DE SEGMENTAÇÃO E MASK-SLIC ({ano_fim})")
-    print("=" * 80)
+    print("=" * 80, flush=True)
+    print(f"📄 SCRIPT 06 - RELATÓRIO DE SEGMENTAÇÃO E MASK-SLIC ({ano_fim})", flush=True)
+    print("=" * 80, flush=True)
 
-    # 1. Carregar Dados Raster e Vetor
-    print("1. A ler imagem de satélite e Shapefile...")
+    print("1. A ler imagem de satélite e Shapefile...", flush=True)
     with rasterio.open(path_cbers) as src:
         cbers_transform = src.transform
         cbers_shape = (src.height, src.width)
@@ -69,15 +67,13 @@ def main():
     gdf_binario = gpd.read_file(path_shp_binario)
     gdf_binario = gdf_binario.to_crs(cbers_crs) 
     
-    # 2. Rasterização
-    print("2. A rasterizar máscaras (Segmentar e Não Segmentar)...")
+    print("2. A rasterizar máscaras (Segmentar e Não Segmentar)...", flush=True)
     geom_seg = gdf_binario[gdf_binario['class_name'] == 'Segmentar'].geometry
     geom_nao_seg = gdf_binario[gdf_binario['class_name'] == 'Nao_Segmentar'].geometry
 
     mask_seg = rasterize([(geom, 1) for geom in geom_seg], out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8)
     mask_nao_seg = rasterize([(geom, 1) for geom in geom_nao_seg], out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8)
 
-    # 3. Cálculos do Relatório
     qtp = int(np.sum(mask_seg == 1))
     qps = 62.5
     qts = int(qtp / qps) if qps > 0 else 0
@@ -87,10 +83,9 @@ def main():
     nao_seg_ha = nao_seg_pixels * pixel_area_ha
 
     if qts <= 0:
-        print("❌ ERRO: A classe 'Segmentar' tem 0 pixéis. Verifique a sobreposição dos mapas.")
+        print("❌ ERRO: A classe 'Segmentar' tem 0 pixéis. Verifique a sobreposição dos mapas.", flush=True)
         sys.exit(1)
 
-    # Exportar Relatório TXT
     relatorio_txt_path = os.path.join(output_report_dir, f"{code_muni}_Relatorio_MaskSLIC_{ano_fim}.txt")
     with open(relatorio_txt_path, 'w', encoding='utf-8') as f:
         f.write("=========================================================\n")
@@ -108,29 +103,32 @@ def main():
         f.write(f" - Quantidade Total de Pixels: {nao_seg_pixels:,}\n")
         f.write(f" - Área Total: {nao_seg_ha:,.4f} hectares\n")
         f.write("=========================================================\n")
-    print(f"✅ Relatório TXT gerado em: {relatorio_txt_path}")
+    print(f"✅ Relatório TXT gerado em: {relatorio_txt_path}", flush=True)
 
-    # 4. Processamento da Imagem: MASK-SLIC COM TILING (Blocos)
-    print(f"3. A processar o MaskSLIC ({qts:,} superpixels)...")
-    print("   ⏳ Imagem muito grande! A usar Processamento em Blocos (Tiling) para poupar RAM...")
+    print(f"3. A processar o MaskSLIC ({qts:,} superpixels)...", flush=True)
+    print("   ⏳ Otimização ativada: Processamento em blocos menores com feedback em tempo real (aguarde uns minutos)...", flush=True)
     
     r_eq = esticar_contraste(band_r)
     g_eq = esticar_contraste(band_g)
     b_eq = esticar_contraste(band_b)
     
-    # Prepara as matrizes de saída vazias, já em formato uint8
     r_out = (r_eq * 255).astype(np.uint8)
     g_out = (g_eq * 255).astype(np.uint8)
     b_out = (b_eq * 255).astype(np.uint8)
     
-    # Liberta a memória extra pesada imediatamente
     del band_r, band_g, band_b
     gc.collect()
 
     h, w = mask_seg.shape
-    tile_size = 2048 # Tamanho do bloco para o SLIC não engasgar
+    tile_size = 1024  # Bloco reduzido para acelerar o feedback visual
     
+    total_linhas = len(range(0, h, tile_size))
+    linha_atual = 0
+
     for y in range(0, h, tile_size):
+        linha_atual += 1
+        blocos_processados_nesta_linha = 0
+        
         for x in range(0, w, tile_size):
             y_end = min(y + tile_size, h)
             x_end = min(x + tile_size, w)
@@ -138,7 +136,7 @@ def main():
             mask_tile = mask_seg[y:y_end, x:x_end]
             qtp_tile = np.sum(mask_tile)
             
-            # Se não houver área segmentar neste bloco, ignora e acelera o processo!
+            # Pula blocos vazios (sem floresta)
             if qtp_tile == 0:
                 continue
                 
@@ -152,22 +150,20 @@ def main():
                 b_eq[y:y_end, x:x_end]
             ])
             
-            # Executa o SLIC apenas no pedaço da imagem
-            segmentos_tile = slic(rgb_tile, n_segments=qts_tile, compactness=10, mask=(mask_tile == 1), start_label=1)
+            # SLIC com metade das iterações (max_num_iter=5) para acelerar 2x
+            segmentos_tile = slic(rgb_tile, n_segments=qts_tile, compactness=10, mask=(mask_tile == 1), start_label=1, max_num_iter=5)
             contornos_tile = find_boundaries(segmentos_tile, mode='inner')
             
-            # Aplica o amarelo (255, 255, 0) nos contornos deste bloco na imagem final
             r_out[y:y_end, x:x_end][contornos_tile] = 255
             g_out[y:y_end, x:x_end][contornos_tile] = 255
             b_out[y:y_end, x:x_end][contornos_tile] = 0
             
-            del rgb_tile, segmentos_tile, contornos_tile
-            gc.collect()
-            
-        print(f"   -> Progresso SLIC: {min(y+tile_size, h)}/{h} linhas analisadas...")
+            blocos_processados_nesta_linha += 1
 
-    # 5. Salvar Imagem de Alta Resolução Georreferenciada (TIF)
-    print("\n4. A guardar o GeoTIFF final...")
+        # Mostra o status a cada "linha" da grelha processada, forçando a tela a atualizar
+        print(f"   -> Linha da grelha {linha_atual}/{total_linhas} concluída ({blocos_processados_nesta_linha} blocos de floresta desenhados).", flush=True)
+
+    print("\n4. A guardar o GeoTIFF final (Alta Resolução)...", flush=True)
     path_tif_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_ContornosAmarelos_{ano_fim}.tif")
     cbers_meta.update(dtype=rasterio.uint8, count=3, nodata=None)
 
@@ -176,10 +172,9 @@ def main():
         dst.write(g_out, 2)
         dst.write(b_out, 3)
     
-    print(f"✅ Imagem GeoTIFF salva em: {path_tif_slic}")
+    print(f"✅ Imagem GeoTIFF salva em: {path_tif_slic}", flush=True)
 
-    # 6. Gerar pré-visualização em PNG
-    print("5. A gerar pré-visualização rápida (PNG)...")
+    print("5. A gerar pré-visualização rápida (PNG)...", flush=True)
     path_png_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_Preview_{ano_fim}.png")
     
     passo = max(1, cbers_shape[1] // 3000) 
@@ -191,8 +186,8 @@ def main():
     plt.savefig(path_png_slic, bbox_inches='tight', pad_inches=0, dpi=200)
     plt.close()
 
-    print(f"✅ Pré-visualização PNG salva em: {path_png_slic}")
-    print("\n🎉 Processo totalmente concluído!")
+    print(f"✅ Pré-visualização PNG salva em: {path_png_slic}", flush=True)
+    print("\n🎉 Processo totalmente concluído!", flush=True)
 
 if __name__ == "__main__":
     main()
