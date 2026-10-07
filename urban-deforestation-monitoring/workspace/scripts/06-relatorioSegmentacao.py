@@ -56,6 +56,7 @@ def main():
         cbers_transform = src.transform
         cbers_shape = (src.height, src.width)
         cbers_meta = src.meta.copy()
+        cbers_crs = src.crs  # <--- CRUCIAL: Guardar o CRS da Imagem
         
         # Resolução do pixel para calcular hectares (Ex: 2m x 2m = 4m2)
         pixel_res_x = abs(cbers_transform[0])
@@ -68,6 +69,9 @@ def main():
         band_b = src.read(3).astype(np.float32)
 
     gdf_binario = gpd.read_file(path_shp_binario)
+    
+    # <--- CORREÇÃO AQUI: Alinhar o vetor com a grelha da imagem
+    gdf_binario = gdf_binario.to_crs(cbers_crs) 
     
     # 2. Rasterização para cálculos exatos de Pixels
     print("2. A rasterizar máscaras (Segmentar e Não Segmentar)...")
@@ -85,6 +89,10 @@ def main():
 
     nao_seg_pixels = int(np.sum(mask_nao_seg == 1))
     nao_seg_ha = nao_seg_pixels * pixel_area_ha
+
+    if qts <= 0:
+        print("❌ ERRO: A classe 'Segmentar' tem 0 pixéis. Verifique a sobreposição dos mapas.")
+        sys.exit(1)
 
     # Exportar Relatório TXT
     relatorio_txt_path = os.path.join(output_report_dir, f"{code_muni}_Relatorio_MaskSLIC_{ano_fim}.txt")
@@ -109,18 +117,16 @@ def main():
     print(f"✅ Relatório TXT gerado com sucesso em: {relatorio_txt_path}")
 
     # 4. Processamento da Imagem: MASK-SLIC
-    print(f"3. A processar o algoritmo MaskSLIC ({qts} superpixels)...")
-    # Equalização para a imagem final não ficar escura
+    print(f"3. A processar o algoritmo MaskSLIC ({qts:,} superpixels calculados)...")
+    
     r_eq = esticar_contraste(band_r)
     g_eq = esticar_contraste(band_g)
     b_eq = esticar_contraste(band_b)
-    
     rgb = np.dstack([r_eq, g_eq, b_eq])
     
     del band_r, band_g, band_b
     gc.collect()
 
-    # Aplicação do SLIC utilizando a máscara (processa apenas a classe 'Segmentar')
     segmentos = slic(rgb, n_segments=qts, compactness=10, mask=(mask_seg == 1), start_label=1)
 
     # 5. Delinear contornos e pintar a amarelo (R=255, G=255, B=0)
@@ -131,7 +137,6 @@ def main():
     g_out = (g_eq * 255).astype(np.uint8)
     b_out = (b_eq * 255).astype(np.uint8)
 
-    # Aplica o amarelo nos pixels de contorno
     r_out[contornos] = 255
     g_out[contornos] = 255
     b_out[contornos] = 0
@@ -147,11 +152,10 @@ def main():
     
     print(f"✅ Imagem GeoTIFF com contornos (MaskSLIC) salva em: {path_tif_slic}")
 
-    # (Opcional) Gerar uma pré-visualização mais leve em PNG para relatórios visuais
+    # (Opcional) Gerar uma pré-visualização em PNG
     print("5. A gerar pré-visualização rápida (PNG)...")
     path_png_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_Preview_{ano_fim}.png")
     
-    # Reduz para não exceder limites de RAM no momento do matplotlib
     passo = max(1, cbers_shape[1] // 3000) 
     rgb_preview = np.dstack([r_out[::passo, ::passo], g_out[::passo, ::passo], b_out[::passo, ::passo]])
 
