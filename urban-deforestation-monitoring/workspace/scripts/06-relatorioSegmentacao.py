@@ -56,24 +56,20 @@ def main():
         cbers_transform = src.transform
         cbers_shape = (src.height, src.width)
         cbers_meta = src.meta.copy()
-        cbers_crs = src.crs  # <--- CRUCIAL: Guardar o CRS da Imagem
+        cbers_crs = src.crs
         
-        # Resolução do pixel para calcular hectares (Ex: 2m x 2m = 4m2)
         pixel_res_x = abs(cbers_transform[0])
         pixel_res_y = abs(cbers_transform[4])
         pixel_area_ha = (pixel_res_x * pixel_res_y) / 10000.0
         
-        # Leitura das bandas RGB para uso posterior
         band_r = src.read(1).astype(np.float32)
         band_g = src.read(2).astype(np.float32)
         band_b = src.read(3).astype(np.float32)
 
     gdf_binario = gpd.read_file(path_shp_binario)
-    
-    # <--- CORREÇÃO AQUI: Alinhar o vetor com a grelha da imagem
     gdf_binario = gdf_binario.to_crs(cbers_crs) 
     
-    # 2. Rasterização para cálculos exatos de Pixels
+    # 2. Rasterização
     print("2. A rasterizar máscaras (Segmentar e Não Segmentar)...")
     geom_seg = gdf_binario[gdf_binario['class_name'] == 'Segmentar'].geometry
     geom_nao_seg = gdf_binario[gdf_binario['class_name'] == 'Nao_Segmentar'].geometry
@@ -104,44 +100,74 @@ def main():
         f.write("1. PARÂMETROS BASE:\n")
         f.write(f" - Resolução do Pixel: {pixel_res_x:.1f}m x {pixel_res_y:.1f}m\n")
         f.write(f" - QPS (Qtd. de Pixels por Segmento): {qps:.1f} px\n\n")
-        
         f.write("2. CLASSE: SEGMENTAR (Área de Interesse)\n")
         f.write(f" - QTP (Qtd. Total de Pixels): {qtp:,}\n")
         f.write(f" - Área Total: {qtp_ha:,.4f} hectares\n")
         f.write(f" - QTS (Qtd. Total de Segmentos/Superpixels): {qts:,}\n\n")
-        
         f.write("3. CLASSE: NÃO SEGMENTAR (Restante do Município)\n")
         f.write(f" - Quantidade Total de Pixels: {nao_seg_pixels:,}\n")
         f.write(f" - Área Total: {nao_seg_ha:,.4f} hectares\n")
         f.write("=========================================================\n")
-    print(f"✅ Relatório TXT gerado com sucesso em: {relatorio_txt_path}")
+    print(f"✅ Relatório TXT gerado em: {relatorio_txt_path}")
 
-    # 4. Processamento da Imagem: MASK-SLIC
-    print(f"3. A processar o algoritmo MaskSLIC ({qts:,} superpixels calculados)...")
+    # 4. Processamento da Imagem: MASK-SLIC COM TILING (Blocos)
+    print(f"3. A processar o MaskSLIC ({qts:,} superpixels)...")
+    print("   ⏳ Imagem muito grande! A usar Processamento em Blocos (Tiling) para poupar RAM...")
     
     r_eq = esticar_contraste(band_r)
     g_eq = esticar_contraste(band_g)
     b_eq = esticar_contraste(band_b)
-    rgb = np.dstack([r_eq, g_eq, b_eq])
     
-    del band_r, band_g, band_b
-    gc.collect()
-
-    segmentos = slic(rgb, n_segments=qts, compactness=10, mask=(mask_seg == 1), start_label=1)
-
-    # 5. Delinear contornos e pintar a amarelo (R=255, G=255, B=0)
-    print("4. A sobrepor contornos amarelos sobre a imagem RGB original...")
-    contornos = find_boundaries(segmentos, mode='inner')
-
+    # Prepara as matrizes de saída vazias, já em formato uint8
     r_out = (r_eq * 255).astype(np.uint8)
     g_out = (g_eq * 255).astype(np.uint8)
     b_out = (b_eq * 255).astype(np.uint8)
+    
+    # Liberta a memória extra pesada imediatamente
+    del band_r, band_g, band_b
+    gc.collect()
 
-    r_out[contornos] = 255
-    g_out[contornos] = 255
-    b_out[contornos] = 0
+    h, w = mask_seg.shape
+    tile_size = 2048 # Tamanho do bloco para o SLIC não engasgar
+    
+    for y in range(0, h, tile_size):
+        for x in range(0, w, tile_size):
+            y_end = min(y + tile_size, h)
+            x_end = min(x + tile_size, w)
+            
+            mask_tile = mask_seg[y:y_end, x:x_end]
+            qtp_tile = np.sum(mask_tile)
+            
+            # Se não houver área segmentar neste bloco, ignora e acelera o processo!
+            if qtp_tile == 0:
+                continue
+                
+            qts_tile = int(qtp_tile / qps)
+            if qts_tile <= 0:
+                continue
+                
+            rgb_tile = np.dstack([
+                r_eq[y:y_end, x:x_end], 
+                g_eq[y:y_end, x:x_end], 
+                b_eq[y:y_end, x:x_end]
+            ])
+            
+            # Executa o SLIC apenas no pedaço da imagem
+            segmentos_tile = slic(rgb_tile, n_segments=qts_tile, compactness=10, mask=(mask_tile == 1), start_label=1)
+            contornos_tile = find_boundaries(segmentos_tile, mode='inner')
+            
+            # Aplica o amarelo (255, 255, 0) nos contornos deste bloco na imagem final
+            r_out[y:y_end, x:x_end][contornos_tile] = 255
+            g_out[y:y_end, x:x_end][contornos_tile] = 255
+            b_out[y:y_end, x:x_end][contornos_tile] = 0
+            
+            del rgb_tile, segmentos_tile, contornos_tile
+            gc.collect()
+            
+        print(f"   -> Progresso SLIC: {min(y+tile_size, h)}/{h} linhas analisadas...")
 
-    # 6. Salvar Imagem de Alta Resolução Georreferenciada (TIF)
+    # 5. Salvar Imagem de Alta Resolução Georreferenciada (TIF)
+    print("\n4. A guardar o GeoTIFF final...")
     path_tif_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_ContornosAmarelos_{ano_fim}.tif")
     cbers_meta.update(dtype=rasterio.uint8, count=3, nodata=None)
 
@@ -150,9 +176,9 @@ def main():
         dst.write(g_out, 2)
         dst.write(b_out, 3)
     
-    print(f"✅ Imagem GeoTIFF com contornos (MaskSLIC) salva em: {path_tif_slic}")
+    print(f"✅ Imagem GeoTIFF salva em: {path_tif_slic}")
 
-    # (Opcional) Gerar uma pré-visualização em PNG
+    # 6. Gerar pré-visualização em PNG
     print("5. A gerar pré-visualização rápida (PNG)...")
     path_png_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_Preview_{ano_fim}.png")
     
