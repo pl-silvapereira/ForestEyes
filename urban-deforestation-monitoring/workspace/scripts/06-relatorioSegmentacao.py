@@ -8,7 +8,6 @@ import rasterio
 from rasterio.windows import Window
 from rasterio.features import rasterize
 from skimage.segmentation import slic, find_boundaries
-from scipy.ndimage import binary_dilation
 import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 
@@ -109,15 +108,15 @@ def main():
         f.write("=========================================================\n")
     print(f"✅ Relatório TXT atualizado: {relatorio_txt_path}", flush=True)
 
-    print(f"\n3. Iniciando MaskSLIC c/ Proteção Anti-Travamento (Engrossamento Ativado)...", flush=True)
+    print(f"\n3. Iniciando MaskSLIC c/ Proteção Anti-Travamento (Espessura de Borda Refinada)...", flush=True)
     
-    # TRUQUE DO DISCO LOCAL: Grava no SSD nativo do Colab para evitar timeout de rede no Google Drive
+    # Grava no SSD nativo do Colab para evitar timeout de rede no Google Drive
     temp_tif_local = f"/content/temp_slic_{code_muni}_{ano_fim}.tif"
     path_tif_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_ContornosAmarelos_{ano_fim}.tif")
     
     cbers_meta.update(dtype=rasterio.uint8, count=3, nodata=None)
 
-    tile_size = 1024 # Reduzido para ser ainda mais rápido
+    tile_size = 1024 
     h, w = cbers_shape
     blocos_y = int(np.ceil(h / tile_size))
     blocos_x = int(np.ceil(w / tile_size))
@@ -139,10 +138,8 @@ def main():
                 mask_tile = mask_seg[y:y+h_janela, x:x+w_janela]
                 qtp_tile = np.sum(mask_tile)
                 
-                # Lê rgb
                 rgb_raw = src.read(window=window).astype(np.float32)
                 
-                # Aplica contraste rápido
                 r = np.clip((rgb_raw[0] - p2[0]) / (p98[0] - p2[0]) * 255, 0, 255).astype(np.uint8)
                 g = np.clip((rgb_raw[1] - p2[1]) / (p98[1] - p2[1]) * 255, 0, 255).astype(np.uint8)
                 b = np.clip((rgb_raw[2] - p2[2]) / (p98[2] - p2[2]) * 255, 0, 255).astype(np.uint8)
@@ -152,20 +149,17 @@ def main():
                     qts_tile = int(qtp_tile / qps)
                     if qts_tile > 0:
                         segmentos_tile = slic(rgb_tile, n_segments=qts_tile, compactness=10, mask=(mask_tile == 1), start_label=1, max_num_iter=5)
-                        contornos_tile = find_boundaries(segmentos_tile, mode='thick')
                         
-                        # Engrossa a Borda (Efeito "Marca-Texto")
-                        contornos_tile = binary_dilation(contornos_tile, iterations=1) 
+                        # Usando mode='inner' para uma linha limpa de espessura intermediária
+                        contornos_tile = find_boundaries(segmentos_tile, mode='inner')
                         
-                        # Pinta o contorno grosso de Amarelo
+                        # Pinta o contorno ajustado de Amarelo
                         rgb_tile[contornos_tile] = [255, 255, 0]
-                        print(f"   ✅ [Bloco {bloco_atual}/{total_blocos}] -> SLIC desenhado com bordas grossas.", flush=True)
+                        print(f"   ✅ [Bloco {bloco_atual}/{total_blocos}] -> SLIC desenhado com bordas finas.", flush=True)
                 else:
-                    # Dá um feedback mesmo em blocos vazios para você saber que não travou
                     if bloco_atual % 20 == 0:
                         print(f"   ⏩ [Bloco {bloco_atual}/{total_blocos}] -> Avançando áreas sem floresta...", flush=True)
 
-                # Gravação imediata no SSD Local
                 dst.write(rgb_tile[:, :, 0], 1, window=window)
                 dst.write(rgb_tile[:, :, 1], 2, window=window)
                 dst.write(rgb_tile[:, :, 2], 3, window=window)
@@ -175,7 +169,7 @@ def main():
 
     print("\n4. A transferir a imagem final do SSD Local para o seu Google Drive...", flush=True)
     shutil.move(temp_tif_local, path_tif_slic)
-    print(f"✅ Imagem GeoTIFF guardada com contornos realçados em: {path_tif_slic}", flush=True)
+    print(f"✅ Imagem GeoTIFF guardada perfeitamente em: {path_tif_slic}", flush=True)
 
     print("5. A gerar pré-visualização rápida (PNG)...", flush=True)
     path_png_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_Preview_{ano_fim}.png")
@@ -193,7 +187,7 @@ def main():
     plt.close()
 
     print(f"✅ Pré-visualização PNG salva em: {path_png_slic}", flush=True)
-    print("\n🎉 Processo 100% concluído! Verifique a pasta para ver o resultado.", flush=True)
+    print("\n🎉 Processo concluído com contornos mais finos e visuais!", flush=True)
 
 if __name__ == "__main__":
     main()
