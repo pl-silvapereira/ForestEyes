@@ -9,11 +9,11 @@ from skimage.segmentation import slic, find_boundaries
 import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 
-def esticar_contraste(banda):
-    """Aplica contraste a uma banda (2% - 98%) para melhor visualização."""
+def esticar_contraste_uint8(banda):
+    """Aplica contraste (2% - 98%) e converte IMEDIATAMENTE para uint8 (baixo peso de RAM)."""
     p2, p98 = np.percentile(banda[banda > 0], (2, 98))
     banda_eq = np.clip((banda - p2) / (p98 - p2), 0, 1)
-    return banda_eq
+    return (banda_eq * 255).astype(np.uint8)
 
 def main():
     if len(sys.argv) < 4:
@@ -39,17 +39,17 @@ def main():
     path_cbers = os.path.join(project_root, "data", "output", "pansharpening", ano_fim, f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif")
 
     if not os.path.exists(path_shp_binario):
-        print(f"[ERRO CRÍTICO] Shapefile binário não encontrado: {path_shp_binario}")
+        print(f"[ERRO CRÍTICO] Shapefile não encontrado.")
         sys.exit(1)
     if not os.path.exists(path_cbers):
-        print(f"[ERRO CRÍTICO] Imagem CBERS não encontrada: {path_cbers}")
+        print(f"[ERRO CRÍTICO] Imagem CBERS não encontrada.")
         sys.exit(1)
 
     print("=" * 80, flush=True)
     print(f"📄 SCRIPT 06 - RELATÓRIO DE SEGMENTAÇÃO E MASK-SLIC ({ano_fim})", flush=True)
     print("=" * 80, flush=True)
 
-    print("1. A ler imagem de satélite e Shapefile...", flush=True)
+    print("1. A ler imagem de satélite (Gestão extrema de RAM ativada)...", flush=True)
     with rasterio.open(path_cbers) as src:
         cbers_transform = src.transform
         cbers_shape = (src.height, src.width)
@@ -60,14 +60,25 @@ def main():
         pixel_res_y = abs(cbers_transform[4])
         pixel_area_ha = (pixel_res_x * pixel_res_y) / 10000.0
         
+        # Leitura e descarte imediato (banda por banda) para não explodir a RAM
+        print("   -> Lendo e otimizando Banda R...", flush=True)
         band_r = src.read(1).astype(np.float32)
-        band_g = src.read(2).astype(np.float32)
-        band_b = src.read(3).astype(np.float32)
+        r_out = esticar_contraste_uint8(band_r)
+        del band_r; gc.collect()
 
-    gdf_binario = gpd.read_file(path_shp_binario)
-    gdf_binario = gdf_binario.to_crs(cbers_crs) 
+        print("   -> Lendo e otimizando Banda G...", flush=True)
+        band_g = src.read(2).astype(np.float32)
+        g_out = esticar_contraste_uint8(band_g)
+        del band_g; gc.collect()
+
+        print("   -> Lendo e otimizando Banda B...", flush=True)
+        band_b = src.read(3).astype(np.float32)
+        b_out = esticar_contraste_uint8(band_b)
+        del band_b; gc.collect()
+
+    print("\n2. A rasterizar as áreas de floresta...", flush=True)
+    gdf_binario = gpd.read_file(path_shp_binario).to_crs(cbers_crs) 
     
-    print("2. A rasterizar máscaras (Segmentar e Não Segmentar)...", flush=True)
     geom_seg = gdf_binario[gdf_binario['class_name'] == 'Segmentar'].geometry
     geom_nao_seg = gdf_binario[gdf_binario['class_name'] == 'Nao_Segmentar'].geometry
 
@@ -105,30 +116,21 @@ def main():
         f.write("=========================================================\n")
     print(f"✅ Relatório TXT gerado em: {relatorio_txt_path}", flush=True)
 
-    print(f"3. A processar o MaskSLIC ({qts:,} superpixels)...", flush=True)
-    print("   ⏳ Otimização ativada: Processamento em blocos menores com feedback em tempo real (aguarde uns minutos)...", flush=True)
+    print(f"\n3. A iniciar o algoritmo MaskSLIC ({qts:,} superpixels)...", flush=True)
     
-    r_eq = esticar_contraste(band_r)
-    g_eq = esticar_contraste(band_g)
-    b_eq = esticar_contraste(band_b)
-    
-    r_out = (r_eq * 255).astype(np.uint8)
-    g_out = (g_eq * 255).astype(np.uint8)
-    b_out = (b_eq * 255).astype(np.uint8)
-    
-    del band_r, band_g, band_b
-    gc.collect()
-
     h, w = mask_seg.shape
-    tile_size = 1024  # Bloco reduzido para acelerar o feedback visual
+    tile_size = 1024  
     
-    total_linhas = len(range(0, h, tile_size))
-    linha_atual = 0
+    blocos_y = int(np.ceil(h / tile_size))
+    blocos_x = int(np.ceil(w / tile_size))
+    total_blocos = blocos_y * blocos_x
+    
+    print(f"   🗺️ A grelha tem {total_blocos} blocos. Processando de forma cirúrgica...", flush=True)
+    print("-" * 50, flush=True)
+
+    blocos_com_floresta = 0
 
     for y in range(0, h, tile_size):
-        linha_atual += 1
-        blocos_processados_nesta_linha = 0
-        
         for x in range(0, w, tile_size):
             y_end = min(y + tile_size, h)
             x_end = min(x + tile_size, w)
@@ -136,7 +138,6 @@ def main():
             mask_tile = mask_seg[y:y_end, x:x_end]
             qtp_tile = np.sum(mask_tile)
             
-            # Pula blocos vazios (sem floresta)
             if qtp_tile == 0:
                 continue
                 
@@ -144,26 +145,35 @@ def main():
             if qts_tile <= 0:
                 continue
                 
+            # Monta o tile leve em uint8 apenas quando estritamente necessário
             rgb_tile = np.dstack([
-                r_eq[y:y_end, x:x_end], 
-                g_eq[y:y_end, x:x_end], 
-                b_eq[y:y_end, x:x_end]
+                r_out[y:y_end, x:x_end], 
+                g_out[y:y_end, x:x_end], 
+                b_out[y:y_end, x:x_end]
             ])
             
-            # SLIC com metade das iterações (max_num_iter=5) para acelerar 2x
+            # Executa com metade das iterações para evitar picos no C++ interno do pacote
             segmentos_tile = slic(rgb_tile, n_segments=qts_tile, compactness=10, mask=(mask_tile == 1), start_label=1, max_num_iter=5)
             contornos_tile = find_boundaries(segmentos_tile, mode='inner')
             
+            # Pinta de Amarelo
             r_out[y:y_end, x:x_end][contornos_tile] = 255
             g_out[y:y_end, x:x_end][contornos_tile] = 255
             b_out[y:y_end, x:x_end][contornos_tile] = 0
             
-            blocos_processados_nesta_linha += 1
+            blocos_com_floresta += 1
+            
+            if blocos_com_floresta % 10 == 0 or blocos_com_floresta == 1:
+                print(f"   ✅ Processados {blocos_com_floresta} blocos de floresta...", flush=True)
+                
+            # PURGA A RAM IMEDIATAMENTE
+            del mask_tile, rgb_tile, segmentos_tile, contornos_tile
+            gc.collect()
 
-        # Mostra o status a cada "linha" da grelha processada, forçando a tela a atualizar
-        print(f"   -> Linha da grelha {linha_atual}/{total_linhas} concluída ({blocos_processados_nesta_linha} blocos de floresta desenhados).", flush=True)
+    print("-" * 50, flush=True)
+    print(f"   🏁 Sucesso! O MaskSLIC pintou {blocos_com_floresta} blocos válidos.", flush=True)
 
-    print("\n4. A guardar o GeoTIFF final (Alta Resolução)...", flush=True)
+    print("\n4. A guardar o GeoTIFF final...", flush=True)
     path_tif_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_ContornosAmarelos_{ano_fim}.tif")
     cbers_meta.update(dtype=rasterio.uint8, count=3, nodata=None)
 
@@ -187,7 +197,7 @@ def main():
     plt.close()
 
     print(f"✅ Pré-visualização PNG salva em: {path_png_slic}", flush=True)
-    print("\n🎉 Processo totalmente concluído!", flush=True)
+    print("\n🎉 Processo totalmente concluído sem estouro de RAM!", flush=True)
 
 if __name__ == "__main__":
     main()
