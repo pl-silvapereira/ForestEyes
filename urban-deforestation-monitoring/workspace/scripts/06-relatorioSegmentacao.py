@@ -1,13 +1,14 @@
 import sys
 import os
 import gc
+import shutil
 import numpy as np
 import geopandas as gpd
 import rasterio
 from rasterio.windows import Window
 from rasterio.features import rasterize
 from skimage.segmentation import slic, find_boundaries
-from scipy.ndimage import binary_dilation  # IMPORTANTE: Faz a borda amarela grossa igual à sua imagem
+from scipy.ndimage import binary_dilation
 import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 
@@ -57,14 +58,13 @@ def main():
         pixel_res_y = abs(cbers_transform[4])
         pixel_area_ha = (pixel_res_x * pixel_res_y) / 10000.0
 
-        # Lendo uma miniatura (escala 1/10) para achar o brilho e contraste (gasta quase 0 RAM)
         escala = 10
         small_shape = (src.count, src.height // escala, src.width // escala)
         img_miniatura = src.read(out_shape=small_shape)
         
         p2 = np.percentile(img_miniatura, 2, axis=(1, 2))
         p98 = np.percentile(img_miniatura, 98, axis=(1, 2))
-        p98 = np.maximum(p98, p2 + 1) # Proteção matemática
+        p98 = np.maximum(p98, p2 + 1)
         
         del img_miniatura
         gc.collect()
@@ -87,7 +87,7 @@ def main():
     nao_seg_ha = nao_seg_pixels * pixel_area_ha
 
     if qts <= 0:
-        print("❌ ERRO: A classe 'Segmentar' tem 0 pixéis. Verifique a sobreposição dos mapas.", flush=True)
+        print("❌ ERRO: A classe 'Segmentar' tem 0 pixéis.", flush=True)
         sys.exit(1)
 
     relatorio_txt_path = os.path.join(output_report_dir, f"{code_muni}_Relatorio_MaskSLIC_{ano_fim}.txt")
@@ -107,25 +107,27 @@ def main():
         f.write(f" - Quantidade Total de Pixels: {nao_seg_pixels:,}\n")
         f.write(f" - Área Total: {nao_seg_ha:,.4f} hectares\n")
         f.write("=========================================================\n")
-    print(f"✅ Relatório TXT gerado em: {relatorio_txt_path}", flush=True)
+    print(f"✅ Relatório TXT atualizado: {relatorio_txt_path}", flush=True)
 
-    print(f"\n3. Iniciando processamento MaskSLIC (Engrossamento de Bordas Ativado)...", flush=True)
+    print(f"\n3. Iniciando MaskSLIC c/ Proteção Anti-Travamento (Engrossamento Ativado)...", flush=True)
     
+    # TRUQUE DO DISCO LOCAL: Grava no SSD nativo do Colab para evitar timeout de rede no Google Drive
+    temp_tif_local = f"/content/temp_slic_{code_muni}_{ano_fim}.tif"
     path_tif_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_ContornosAmarelos_{ano_fim}.tif")
+    
     cbers_meta.update(dtype=rasterio.uint8, count=3, nodata=None)
 
-    tile_size = 2048  
+    tile_size = 1024 # Reduzido para ser ainda mais rápido
     h, w = cbers_shape
     blocos_y = int(np.ceil(h / tile_size))
     blocos_x = int(np.ceil(w / tile_size))
     total_blocos = blocos_y * blocos_x
     
-    print(f"   🗺️  A imagem foi fatiada em {total_blocos} blocos. Extraindo superpixels...", flush=True)
+    print(f"   🗺️  A imagem tem {total_blocos} blocos. A gravar no SSD local para velocidade máxima...", flush=True)
 
     bloco_atual = 0
 
-    # Lendo o original e escrevendo o final simultaneamente em blocos para RAM não passar de 50MB
-    with rasterio.open(path_cbers) as src, rasterio.open(path_tif_slic, 'w', **cbers_meta) as dst:
+    with rasterio.open(path_cbers) as src, rasterio.open(temp_tif_local, 'w', **cbers_meta) as dst:
         for y in range(0, h, tile_size):
             for x in range(0, w, tile_size):
                 bloco_atual += 1
@@ -137,7 +139,7 @@ def main():
                 mask_tile = mask_seg[y:y+h_janela, x:x+w_janela]
                 qtp_tile = np.sum(mask_tile)
                 
-                # Lê apenas os pixels deste quadrado do disco rígido
+                # Lê rgb
                 rgb_raw = src.read(window=window).astype(np.float32)
                 
                 # Aplica contraste rápido
@@ -146,34 +148,34 @@ def main():
                 b = np.clip((rgb_raw[2] - p2[2]) / (p98[2] - p2[2]) * 255, 0, 255).astype(np.uint8)
                 rgb_tile = np.dstack([r, g, b])
 
-                # Se houver floresta, aplica MaskSLIC
                 if qtp_tile > 0:
                     qts_tile = int(qtp_tile / qps)
                     if qts_tile > 0:
-                        # 1. Gera os segmentos
                         segmentos_tile = slic(rgb_tile, n_segments=qts_tile, compactness=10, mask=(mask_tile == 1), start_label=1, max_num_iter=5)
-                        
-                        # 2. Acha a borda fina
                         contornos_tile = find_boundaries(segmentos_tile, mode='thick')
                         
-                        # 3. ENGROSSA A BORDA (Efeito "Marca-Texto" da imagem anexada)
+                        # Engrossa a Borda (Efeito "Marca-Texto")
                         contornos_tile = binary_dilation(contornos_tile, iterations=1) 
                         
-                        # 4. Pinta o contorno grosso de Amarelo Neon
+                        # Pinta o contorno grosso de Amarelo
                         rgb_tile[contornos_tile] = [255, 255, 0]
-                        
                         print(f"   ✅ [Bloco {bloco_atual}/{total_blocos}] -> SLIC desenhado com bordas grossas.", flush=True)
+                else:
+                    # Dá um feedback mesmo em blocos vazios para você saber que não travou
+                    if bloco_atual % 20 == 0:
+                        print(f"   ⏩ [Bloco {bloco_atual}/{total_blocos}] -> Avançando áreas sem floresta...", flush=True)
 
-                # Gravação imediata no HD
+                # Gravação imediata no SSD Local
                 dst.write(rgb_tile[:, :, 0], 1, window=window)
                 dst.write(rgb_tile[:, :, 1], 2, window=window)
                 dst.write(rgb_tile[:, :, 2], 3, window=window)
 
-                # Liberta a RAM instantaneamente
                 del rgb_raw, rgb_tile, r, g, b, mask_tile
                 gc.collect()
 
-    print(f"\n✅ Imagem GeoTIFF guardada com contornos realçados em: {path_tif_slic}", flush=True)
+    print("\n4. A transferir a imagem final do SSD Local para o seu Google Drive...", flush=True)
+    shutil.move(temp_tif_local, path_tif_slic)
+    print(f"✅ Imagem GeoTIFF guardada com contornos realçados em: {path_tif_slic}", flush=True)
 
     print("5. A gerar pré-visualização rápida (PNG)...", flush=True)
     path_png_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_Preview_{ano_fim}.png")
@@ -191,7 +193,7 @@ def main():
     plt.close()
 
     print(f"✅ Pré-visualização PNG salva em: {path_png_slic}", flush=True)
-    print("\n🎉 Processo 100% concluído! Verifique a pasta para ver o resultado do novo contorno.", flush=True)
+    print("\n🎉 Processo 100% concluído! Verifique a pasta para ver o resultado.", flush=True)
 
 if __name__ == "__main__":
     main()
