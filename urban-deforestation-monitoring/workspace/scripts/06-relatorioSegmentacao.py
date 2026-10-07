@@ -4,16 +4,26 @@ import gc
 import numpy as np
 import geopandas as gpd
 import rasterio
+from rasterio.windows import Window
 from rasterio.features import rasterize
 from skimage.segmentation import slic, find_boundaries
 import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 
-def esticar_contraste_uint8(banda):
-    """Aplica contraste (2% - 98%) e converte IMEDIATAMENTE para uint8 (baixo peso de RAM)."""
-    p2, p98 = np.percentile(banda[banda > 0], (2, 98))
-    banda_eq = np.clip((banda - p2) / (p98 - p2), 0, 1)
-    return (banda_eq * 255).astype(np.uint8)
+def get_percentiles_low_ram(src, band_idx):
+    """Lê uma versão minúscula da imagem diretamente do disco para calcular o contraste sem usar RAM."""
+    step = max(1, src.width // 1000)
+    out_shape = (src.height // step, src.width // step)
+    amostra = src.read(band_idx, out_shape=out_shape).astype(np.float32)
+    validos = amostra[amostra > 0]
+    
+    if len(validos) == 0:
+        return 0, 1
+        
+    p2, p98 = np.percentile(validos, (2, 98))
+    del amostra, validos
+    gc.collect()
+    return p2, max(p98, p2 + 1e-5) # Evita divisão por zero
 
 def main():
     if len(sys.argv) < 4:
@@ -49,35 +59,25 @@ def main():
     print(f"📄 SCRIPT 06 - RELATÓRIO DE SEGMENTAÇÃO E MASK-SLIC ({ano_fim})", flush=True)
     print("=" * 80, flush=True)
 
-    print("1. A ler imagem de satélite (Gestão extrema de RAM ativada)...", flush=True)
+    # 1. Obter metadados e limites globais SEM carregar a imagem na RAM
+    print("1. A ler metadados da imagem CBERS...", flush=True)
     with rasterio.open(path_cbers) as src:
-        cbers_transform = src.transform
-        cbers_shape = (src.height, src.width)
         cbers_meta = src.meta.copy()
         cbers_crs = src.crs
+        cbers_transform = src.transform
+        cbers_shape = (src.height, src.width)
         
         pixel_res_x = abs(cbers_transform[0])
         pixel_res_y = abs(cbers_transform[4])
         pixel_area_ha = (pixel_res_x * pixel_res_y) / 10000.0
-        
-        # Leitura e descarte imediato (banda por banda) para não explodir a RAM
-        print("   -> Lendo e otimizando Banda R...", flush=True)
-        band_r = src.read(1).astype(np.float32)
-        r_out = esticar_contraste_uint8(band_r)
-        del band_r; gc.collect()
 
-        print("   -> Lendo e otimizando Banda G...", flush=True)
-        band_g = src.read(2).astype(np.float32)
-        g_out = esticar_contraste_uint8(band_g)
-        del band_g; gc.collect()
+        print("   -> A calcular contraste global (Amostragem Rápida)...", flush=True)
+        p2_r, p98_r = get_percentiles_low_ram(src, 1)
+        p2_g, p98_g = get_percentiles_low_ram(src, 2)
+        p2_b, p98_b = get_percentiles_low_ram(src, 3)
 
-        print("   -> Lendo e otimizando Banda B...", flush=True)
-        band_b = src.read(3).astype(np.float32)
-        b_out = esticar_contraste_uint8(band_b)
-        del band_b; gc.collect()
-
-    print("\n2. A rasterizar as áreas de floresta...", flush=True)
-    gdf_binario = gpd.read_file(path_shp_binario).to_crs(cbers_crs) 
+    print("\n2. A rasterizar áreas do Shapefile...", flush=True)
+    gdf_binario = gpd.read_file(path_shp_binario).to_crs(cbers_crs)
     
     geom_seg = gdf_binario[gdf_binario['class_name'] == 'Segmentar'].geometry
     geom_nao_seg = gdf_binario[gdf_binario['class_name'] == 'Nao_Segmentar'].geometry
@@ -116,88 +116,82 @@ def main():
         f.write("=========================================================\n")
     print(f"✅ Relatório TXT gerado em: {relatorio_txt_path}", flush=True)
 
-    print(f"\n3. A iniciar o algoritmo MaskSLIC ({qts:,} superpixels)...", flush=True)
+    print(f"\n3. Iniciando processamento MaskSLIC OUT-OF-CORE ({qts:,} superpixels)...", flush=True)
     
-    h, w = mask_seg.shape
-    tile_size = 1024  
-    
-    blocos_y = int(np.ceil(h / tile_size))
-    blocos_x = int(np.ceil(w / tile_size))
-    total_blocos = blocos_y * blocos_x
-    
-    print(f"   🗺️ A grelha tem {total_blocos} blocos. Processando de forma cirúrgica...", flush=True)
-    print("-" * 50, flush=True)
-
-    blocos_com_floresta = 0
-
-    for y in range(0, h, tile_size):
-        for x in range(0, w, tile_size):
-            y_end = min(y + tile_size, h)
-            x_end = min(x + tile_size, w)
-            
-            mask_tile = mask_seg[y:y_end, x:x_end]
-            qtp_tile = np.sum(mask_tile)
-            
-            if qtp_tile == 0:
-                continue
-                
-            qts_tile = int(qtp_tile / qps)
-            if qts_tile <= 0:
-                continue
-                
-            # Monta o tile leve em uint8 apenas quando estritamente necessário
-            rgb_tile = np.dstack([
-                r_out[y:y_end, x:x_end], 
-                g_out[y:y_end, x:x_end], 
-                b_out[y:y_end, x:x_end]
-            ])
-            
-            # Executa com metade das iterações para evitar picos no C++ interno do pacote
-            segmentos_tile = slic(rgb_tile, n_segments=qts_tile, compactness=10, mask=(mask_tile == 1), start_label=1, max_num_iter=5)
-            contornos_tile = find_boundaries(segmentos_tile, mode='inner')
-            
-            # Pinta de Amarelo
-            r_out[y:y_end, x:x_end][contornos_tile] = 255
-            g_out[y:y_end, x:x_end][contornos_tile] = 255
-            b_out[y:y_end, x:x_end][contornos_tile] = 0
-            
-            blocos_com_floresta += 1
-            
-            if blocos_com_floresta % 10 == 0 or blocos_com_floresta == 1:
-                print(f"   ✅ Processados {blocos_com_floresta} blocos de floresta...", flush=True)
-                
-            # PURGA A RAM IMEDIATAMENTE
-            del mask_tile, rgb_tile, segmentos_tile, contornos_tile
-            gc.collect()
-
-    print("-" * 50, flush=True)
-    print(f"   🏁 Sucesso! O MaskSLIC pintou {blocos_com_floresta} blocos válidos.", flush=True)
-
-    print("\n4. A guardar o GeoTIFF final...", flush=True)
     path_tif_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_ContornosAmarelos_{ano_fim}.tif")
     cbers_meta.update(dtype=rasterio.uint8, count=3, nodata=None)
 
-    with rasterio.open(path_tif_slic, 'w', **cbers_meta) as dst:
-        dst.write(r_out, 1)
-        dst.write(g_out, 2)
-        dst.write(b_out, 3)
+    tile_size = 1024  
+    h, w = cbers_shape
+    total_blocos = int(np.ceil(h / tile_size)) * int(np.ceil(w / tile_size))
     
-    print(f"✅ Imagem GeoTIFF salva em: {path_tif_slic}", flush=True)
+    print(f"   🗺️  A imagem tem {total_blocos} blocos. A gravar diretamente no disco rígido...", flush=True)
+
+    blocos_com_floresta = 0
+    bloco_atual = 0
+
+    # O Segredo: Abrimos a origem para LEITURA e o destino para GRAVAÇÃO em simultâneo
+    with rasterio.open(path_cbers) as src, rasterio.open(path_tif_slic, 'w', **cbers_meta) as dst:
+        for y in range(0, h, tile_size):
+            for x in range(0, w, tile_size):
+                bloco_atual += 1
+                
+                # Define a janela de recorte georreferenciada
+                window = Window(x, y, min(tile_size, w - x), min(tile_size, h - y))
+                mask_tile = mask_seg[y:y+window.height, x:x+window.width]
+                qtp_tile = np.sum(mask_tile)
+                
+                # Leitura em bloco direto do disco
+                rgb_raw = src.read(window=window).astype(np.float32)
+                
+                # Equalização do bloco em memória (Poucos MBs por vez)
+                r = np.clip((rgb_raw[0] - p2_r) / (p98_r - p2_r), 0, 1) * 255
+                g = np.clip((rgb_raw[1] - p2_g) / (p98_g - p2_g), 0, 1) * 255
+                b = np.clip((rgb_raw[2] - p2_b) / (p98_b - p2_b), 0, 1) * 255
+                rgb_tile = np.dstack([r, g, b]).astype(np.uint8)
+
+                # Se houver floresta, aplica MaskSLIC
+                if qtp_tile > 0:
+                    qts_tile = int(qtp_tile / qps)
+                    if qts_tile > 0:
+                        segmentos_tile = slic(rgb_tile, n_segments=qts_tile, compactness=10, mask=(mask_tile == 1), start_label=1, max_num_iter=5)
+                        contornos_tile = find_boundaries(segmentos_tile, mode='inner')
+                        
+                        # Pinta contorno de amarelo
+                        rgb_tile[contornos_tile] = [255, 255, 0]
+                        blocos_com_floresta += 1
+                        
+                        print(f"   ✅ [Bloco {bloco_atual}/{total_blocos}] MaskSLIC aplicado com sucesso.", flush=True)
+
+                # Gravação em bloco direto no disco rígido
+                dst.write(rgb_tile[:, :, 0], 1, window=window)
+                dst.write(rgb_tile[:, :, 1], 2, window=window)
+                dst.write(rgb_tile[:, :, 2], 3, window=window)
+
+                # Liberta a memória do bloco atual
+                del rgb_raw, rgb_tile, r, g, b, mask_tile
+                gc.collect()
+
+    print(f"\n✅ Imagem GeoTIFF de alta resolução guardada de forma segura em: {path_tif_slic}", flush=True)
 
     print("5. A gerar pré-visualização rápida (PNG)...", flush=True)
     path_png_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_Preview_{ano_fim}.png")
     
-    passo = max(1, cbers_shape[1] // 3000) 
-    rgb_preview = np.dstack([r_out[::passo, ::passo], g_out[::passo, ::passo], b_out[::passo, ::passo]])
+    # Lê a imagem final gerada num formato miniatura seguro
+    with rasterio.open(path_tif_slic) as src:
+        passo = max(1, src.width // 3000)
+        out_shape = (src.count, src.height // passo, src.width // passo)
+        preview_rgb = src.read(out_shape=out_shape)
+        preview_rgb = np.moveaxis(preview_rgb, 0, -1) 
 
     fig, ax = plt.subplots(figsize=(10, 10))
-    ax.imshow(rgb_preview)
+    ax.imshow(preview_rgb)
     ax.axis('off')
     plt.savefig(path_png_slic, bbox_inches='tight', pad_inches=0, dpi=200)
     plt.close()
 
     print(f"✅ Pré-visualização PNG salva em: {path_png_slic}", flush=True)
-    print("\n🎉 Processo totalmente concluído sem estouro de RAM!", flush=True)
+    print("\n🎉 Processo totalmente concluído de forma estável!", flush=True)
 
 if __name__ == "__main__":
     main()
