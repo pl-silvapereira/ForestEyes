@@ -45,8 +45,8 @@ def main():
     print(f"📄 SCRIPT 06 - RELATÓRIO DE SEGMENTAÇÃO E MASK-SLIC ({ano_fim})", flush=True)
     print("=" * 80, flush=True)
 
-    # 1. Obter metadados SEM carregar a imagem na RAM
-    print("1. A ler metadados e calcular contraste global de forma otimizada...", flush=True)
+    # 1. Ler metadados copiando a estrutura EXATA da imagem original
+    print("1. A ler metadados e limites espaciais da imagem CBERS original...", flush=True)
     with rasterio.open(path_cbers) as src:
         cbers_meta = src.meta.copy()
         cbers_crs = src.crs
@@ -56,17 +56,12 @@ def main():
         pixel_res_x = abs(cbers_transform[0])
         pixel_res_y = abs(cbers_transform[4])
         pixel_area_ha = (pixel_res_x * pixel_res_y) / 10000.0
-
-        escala = 10
-        small_shape = (src.count, src.height // escala, src.width // escala)
-        img_miniatura = src.read(out_shape=small_shape)
         
-        p2 = np.percentile(img_miniatura, 2, axis=(1, 2))
-        p98 = np.percentile(img_miniatura, 98, axis=(1, 2))
-        p98 = np.maximum(p98, p2 + 1)
-        
-        del img_miniatura
-        gc.collect()
+        # Define o valor máximo para a cor Amarela baseando-se no tipo de dado original
+        if np.issubdtype(cbers_meta['dtype'], np.integer):
+            amarelo_max = np.iinfo(cbers_meta['dtype']).max
+        else:
+            amarelo_max = 255
 
     print("2. A rasterizar áreas do Shapefile...", flush=True)
     gdf_binario = gpd.read_file(path_shp_binario).to_crs(cbers_crs)
@@ -108,21 +103,19 @@ def main():
         f.write("=========================================================\n")
     print(f"✅ Relatório TXT atualizado: {relatorio_txt_path}", flush=True)
 
-    print(f"\n3. Iniciando MaskSLIC c/ Proteção Anti-Travamento (Espessura de Borda Refinada)...", flush=True)
+    print(f"\n3. Iniciando MaskSLIC e clonagem RAW 1:1 sem perdas de qualidade...", flush=True)
     
-    # Grava no SSD nativo do Colab para evitar timeout de rede no Google Drive
-    temp_tif_local = f"/content/temp_slic_{code_muni}_{ano_fim}.tif"
+    # SSD local para gravação rápida
+    temp_tif_local = f"/content/temp_slic_alta_fidelidade_{code_muni}_{ano_fim}.tif"
     path_tif_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_ContornosAmarelos_{ano_fim}.tif")
     
-    cbers_meta.update(dtype=rasterio.uint8, count=3, nodata=None)
-
     tile_size = 1024 
     h, w = cbers_shape
     blocos_y = int(np.ceil(h / tile_size))
     blocos_x = int(np.ceil(w / tile_size))
     total_blocos = blocos_y * blocos_x
     
-    print(f"   🗺️  A imagem tem {total_blocos} blocos. A gravar no SSD local para velocidade máxima...", flush=True)
+    print(f"   🗺️  A grelha tem {total_blocos} blocos. Copiando dados RAW...", flush=True)
 
     bloco_atual = 0
 
@@ -138,47 +131,58 @@ def main():
                 mask_tile = mask_seg[y:y+h_janela, x:x+w_janela]
                 qtp_tile = np.sum(mask_tile)
                 
-                rgb_raw = src.read(window=window).astype(np.float32)
-                
-                r = np.clip((rgb_raw[0] - p2[0]) / (p98[0] - p2[0]) * 255, 0, 255).astype(np.uint8)
-                g = np.clip((rgb_raw[1] - p2[1]) / (p98[1] - p2[1]) * 255, 0, 255).astype(np.uint8)
-                b = np.clip((rgb_raw[2] - p2[2]) / (p98[2] - p2[2]) * 255, 0, 255).astype(np.uint8)
-                rgb_tile = np.dstack([r, g, b])
+                # Leitura BRUTA (RAW) sem alterar o tipo de dado original
+                rgb_raw = src.read(window=window) 
 
                 if qtp_tile > 0:
                     qts_tile = int(qtp_tile / qps)
                     if qts_tile > 0:
-                        segmentos_tile = slic(rgb_tile, n_segments=qts_tile, compactness=10, mask=(mask_tile == 1), start_label=1, max_num_iter=5)
-                        
-                        # Usando mode='inner' para uma linha limpa de espessura intermediária
+                        # Prepara uma versão leve temporária estritamente para o algoritmo SLIC não falhar
+                        rgb_slic = np.moveaxis(rgb_raw, 0, -1).astype(np.float32)
+                        tile_max = rgb_slic.max()
+                        if tile_max > 0:
+                            rgb_slic /= tile_max # Normaliza apenas a cópia de processamento
+                            
+                        # Gera o contorno
+                        segmentos_tile = slic(rgb_slic, n_segments=qts_tile, compactness=10, mask=(mask_tile == 1), start_label=1, max_num_iter=5)
                         contornos_tile = find_boundaries(segmentos_tile, mode='inner')
                         
-                        # Pinta o contorno ajustado de Amarelo
-                        rgb_tile[contornos_tile] = [255, 255, 0]
-                        print(f"   ✅ [Bloco {bloco_atual}/{total_blocos}] -> SLIC desenhado com bordas finas.", flush=True)
+                        # Aplica o Amarelo Puro diretamente na imagem BRUTA preservada
+                        rgb_raw[0][contornos_tile] = amarelo_max
+                        rgb_raw[1][contornos_tile] = amarelo_max
+                        rgb_raw[2][contornos_tile] = 0
+                        
+                        print(f"   ✅ [Bloco {bloco_atual}/{total_blocos}] -> Contornos finos inseridos no RAW.", flush=True)
                 else:
                     if bloco_atual % 20 == 0:
-                        print(f"   ⏩ [Bloco {bloco_atual}/{total_blocos}] -> Avançando áreas sem floresta...", flush=True)
+                        print(f"   ⏩ [Bloco {bloco_atual}/{total_blocos}] -> Copiando áreas RAW intactas...", flush=True)
 
-                dst.write(rgb_tile[:, :, 0], 1, window=window)
-                dst.write(rgb_tile[:, :, 1], 2, window=window)
-                dst.write(rgb_tile[:, :, 2], 3, window=window)
+                # Grava no arquivo a imagem intocada (apenas com as linhas adicionadas)
+                dst.write(rgb_raw, window=window)
 
-                del rgb_raw, rgb_tile, r, g, b, mask_tile
+                del rgb_raw, mask_tile
                 gc.collect()
 
-    print("\n4. A transferir a imagem final do SSD Local para o seu Google Drive...", flush=True)
+    print("\n4. A transferir a imagem RAW final para o Google Drive...", flush=True)
     shutil.move(temp_tif_local, path_tif_slic)
-    print(f"✅ Imagem GeoTIFF guardada perfeitamente em: {path_tif_slic}", flush=True)
+    print(f"✅ Imagem GeoTIFF de Altíssima Fidelidade guardada em: {path_tif_slic}", flush=True)
 
-    print("5. A gerar pré-visualização rápida (PNG)...", flush=True)
+    # 5. Pré-visualização PNG
+    print("5. A gerar pré-visualização leve em PNG (com ajuste visual automático)...", flush=True)
     path_png_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_Preview_{ano_fim}.png")
     
     with rasterio.open(path_tif_slic) as src:
         passo = max(1, src.width // 3000)
         out_shape = (src.count, src.height // passo, src.width // passo)
-        preview_rgb = src.read(out_shape=out_shape)
+        preview_rgb = src.read(out_shape=out_shape).astype(np.float32)
         preview_rgb = np.moveaxis(preview_rgb, 0, -1) 
+        
+        # Dá um brilho sutil apenas no PNG para você conseguir visualizar a prévia no computador facilmente
+        p2, p98 = np.percentile(preview_rgb[preview_rgb > 0], (2, 98))
+        if p98 > p2:
+            preview_rgb = np.clip((preview_rgb - p2) / (p98 - p2), 0, 1)
+        else:
+            preview_rgb = preview_rgb / amarelo_max
 
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.imshow(preview_rgb)
@@ -187,7 +191,7 @@ def main():
     plt.close()
 
     print(f"✅ Pré-visualização PNG salva em: {path_png_slic}", flush=True)
-    print("\n🎉 Processo concluído com contornos mais finos e visuais!", flush=True)
+    print("\n🎉 Processo 100% concluído! A imagem original foi perfeitamente preservada.", flush=True)
 
 if __name__ == "__main__":
     main()
