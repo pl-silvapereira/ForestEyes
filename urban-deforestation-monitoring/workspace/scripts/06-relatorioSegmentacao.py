@@ -56,11 +56,6 @@ def main():
         pixel_res_x = abs(cbers_transform[0])
         pixel_res_y = abs(cbers_transform[4])
         pixel_area_ha = (pixel_res_x * pixel_res_y) / 10000.0
-        
-        if np.issubdtype(cbers_meta['dtype'], np.integer):
-            cor_max = np.iinfo(cbers_meta['dtype']).max
-        else:
-            cor_max = 255
 
     print("2. A rasterizar áreas do Shapefile...", flush=True)
     gdf_binario = gpd.read_file(path_shp_binario).to_crs(cbers_crs)
@@ -72,7 +67,7 @@ def main():
     mask_nao_seg = rasterize([(geom, 1) for geom in geom_nao_seg], out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8)
 
     qtp = int(np.sum(mask_seg == 1))
-    qps = 62.5*4
+    qps = 250.0
     qts = int(qtp / qps) if qps > 0 else 0
     qtp_ha = qtp * pixel_area_ha
 
@@ -129,13 +124,11 @@ def main():
             dst.set_band_description(4, "NIR")
 
         # -------------------------------------------------------------
-        # INSERÇÃO MANUAL DO CONTRASTE (STRETCH MIN/MAX)
+        # INSERÇÃO MANUAL DO CONTRASTE (Como Strings para GDAL/QGIS)
         # -------------------------------------------------------------
-        # O QGIS utiliza as tags STATISTICS_MINIMUM e STATISTICS_MAXIMUM para 
-        # definir os valores do painel de Symbology -> Min/Max automaticamente.
-        dst.update_tags(1, STATISTICS_MINIMUM=96,  STATISTICS_MAXIMUM=549) # Band 1: Red
-        dst.update_tags(2, STATISTICS_MINIMUM=121, STATISTICS_MAXIMUM=468) # Band 2: Green
-        dst.update_tags(3, STATISTICS_MINIMUM=163, STATISTICS_MAXIMUM=535) # Band 3: Blue
+        dst.update_tags(1, STATISTICS_MINIMUM="96",  STATISTICS_MAXIMUM="549")
+        dst.update_tags(2, STATISTICS_MINIMUM="121", STATISTICS_MAXIMUM="468")
+        dst.update_tags(3, STATISTICS_MINIMUM="163", STATISTICS_MAXIMUM="535")
 
         for y in range(0, h, tile_size):
             for x in range(0, w, tile_size):
@@ -161,12 +154,12 @@ def main():
                         segmentos_tile = slic(rgb_slic, n_segments=qts_tile, compactness=10, mask=(mask_tile == 1), start_label=1, max_num_iter=5)
                         contornos_tile = find_boundaries(segmentos_tile, mode='inner')
                         
-                        # Aplica o Branco Puro nos contornos preservando a imagem BRUTA
-                        rgb_raw[0][contornos_tile] = cor_max # Red
-                        rgb_raw[1][contornos_tile] = cor_max # Green
-                        rgb_raw[2][contornos_tile] = cor_max # Blue
+                        # Aplica o Branco proporcional aos limites exatos do QGIS (Evitando o valor 65535)
+                        rgb_raw[0][contornos_tile] = 549 # Red
+                        rgb_raw[1][contornos_tile] = 468 # Green
+                        rgb_raw[2][contornos_tile] = 535 # Blue
                         
-                        print(f"   ✅ [Bloco {bloco_atual}/{total_blocos}] -> Contornos brancos inseridos no RAW.", flush=True)
+                        print(f"   ✅ [Bloco {bloco_atual}/{total_blocos}] -> Contornos equilibrados inseridos no RAW.", flush=True)
                 else:
                     if bloco_atual % 20 == 0:
                         print(f"   ⏩ [Bloco {bloco_atual}/{total_blocos}] -> Copiando áreas RAW intactas...", flush=True)
@@ -178,7 +171,7 @@ def main():
 
     print("\n4. A transferir a imagem RAW final para o Google Drive...", flush=True)
     shutil.move(temp_tif_local, path_tif_slic)
-    print(f"✅ Imagem GeoTIFF guardada com configuração de contraste aplicada em: {path_tif_slic}", flush=True)
+    print(f"✅ Imagem GeoTIFF guardada com configuração de contraste corrigida em: {path_tif_slic}", flush=True)
 
     print("5. A gerar pré-visualização rápida (PNG)...", flush=True)
     path_png_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_Preview_{ano_fim}.png")
@@ -192,8 +185,6 @@ def main():
         p2, p98 = np.percentile(preview_rgb[preview_rgb > 0], (2, 98))
         if p98 > p2:
             preview_rgb = np.clip((preview_rgb - p2) / (p98 - p2), 0, 1)
-        else:
-            preview_rgb = preview_rgb / cor_max
 
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.imshow(preview_rgb)
@@ -202,7 +193,7 @@ def main():
     plt.close()
 
     print(f"✅ Pré-visualização PNG salva em: {path_png_slic}", flush=True)
-    print("\n🎉 Processo 100% concluído! Tudo devidamente configurado para o QGIS.", flush=True)
+    print("\n🎉 Processo 100% concluído! O contraste agora está protegido.", flush=True)
 
 if __name__ == "__main__":
     main()
