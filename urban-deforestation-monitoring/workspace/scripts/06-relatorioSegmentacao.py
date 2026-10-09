@@ -3,11 +3,13 @@ import os
 import gc
 import shutil
 import numpy as np
+import pandas as pd
 import geopandas as gpd
 import rasterio
 from rasterio.windows import Window
 from rasterio.features import rasterize
 from skimage.segmentation import slic, find_boundaries
+from skimage.measure import regionprops_table
 import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 
@@ -33,19 +35,24 @@ def main():
 
     path_shp_binario = os.path.join(output_seg_dir, f"{code_muni}_Segmentar_vs_NaoSegmentar_{ano_fim}.shp")
     path_cbers = os.path.join(project_root, "data", "output", "pansharpening", ano_fim, f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif")
+    
+    path_csv_obia = os.path.join(output_report_dir, f"{code_muni}_Atributos_OBIA_{ano_fim}.csv")
+    relatorio_txt_path = os.path.join(output_report_dir, f"{code_muni}_Relatorio_MaskSLIC_{ano_fim}.txt")
 
-    if not os.path.exists(path_shp_binario):
-        print(f"[ERRO CRÍTICO] Shapefile não encontrado.", flush=True)
-        sys.exit(1)
-    if not os.path.exists(path_cbers):
-        print(f"[ERRO CRÍTICO] Imagem CBERS não encontrada.", flush=True)
+    if not os.path.exists(path_shp_binario) or not os.path.exists(path_cbers):
+        print("[ERRO CRÍTICO] Arquivos base não encontrados.", flush=True)
         sys.exit(1)
 
     print("=" * 80, flush=True)
-    print(f"📄 SCRIPT 06 - RELATÓRIO DE SEGMENTAÇÃO E MASK-SLIC ({ano_fim})", flush=True)
+    print(f"📄 SCRIPT 06 - EXTRAÇÃO OBIA E SUPERPIXELS ({ano_fim})", flush=True)
     print("=" * 80, flush=True)
 
-    print("1. A ler metadados e limites espaciais da imagem CBERS original...", flush=True)
+    # 1. VALORES EXATOS EXTRAÍDOS DO XML FORNECIDO
+    min_r, max_r = 56, 1342
+    min_g, max_g = 74, 1050
+    min_b, max_b = 101, 1267
+
+    print("1. A ler metadados da imagem CBERS...", flush=True)
     with rasterio.open(path_cbers) as src:
         cbers_meta = src.meta.copy()
         cbers_crs = src.crs
@@ -55,145 +62,153 @@ def main():
         
         pixel_res_x = abs(cbers_transform[0])
         pixel_res_y = abs(cbers_transform[4])
-        pixel_area_ha = (pixel_res_x * pixel_res_y) / 10000.0
 
     print("2. A rasterizar áreas do Shapefile...", flush=True)
     gdf_binario = gpd.read_file(path_shp_binario).to_crs(cbers_crs)
-    
     geom_seg = gdf_binario[gdf_binario['class_name'] == 'Segmentar'].geometry
     geom_nao_seg = gdf_binario[gdf_binario['class_name'] == 'Nao_Segmentar'].geometry
 
     mask_seg = rasterize([(geom, 1) for geom in geom_seg], out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8)
     mask_nao_seg = rasterize([(geom, 1) for geom in geom_nao_seg], out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8)
-
-    qtp = int(np.sum(mask_seg == 1))
-    qps = 250.0
-    qts = int(qtp / qps) if qps > 0 else 0
-    qtp_ha = qtp * pixel_area_ha
-
-    nao_seg_pixels = int(np.sum(mask_nao_seg == 1))
-    nao_seg_ha = nao_seg_pixels * pixel_area_ha
-
-    if qts <= 0:
-        print("❌ ERRO: A classe 'Segmentar' tem 0 pixéis.", flush=True)
-        sys.exit(1)
-
-    relatorio_txt_path = os.path.join(output_report_dir, f"{code_muni}_Relatorio_MaskSLIC_{ano_fim}.txt")
-    with open(relatorio_txt_path, 'w', encoding='utf-8') as f:
-        f.write("=========================================================\n")
-        f.write(f" RELATÓRIO TÉCNICO DE SEGMENTAÇÃO (MASK-SLIC) - {ano_fim}\n")
-        f.write("=========================================================\n")
-        f.write(f"Município / Código: {code_muni}\n\n")
-        f.write("1. PARÂMETROS BASE:\n")
-        f.write(f" - Resolução do Pixel: {pixel_res_x:.1f}m x {pixel_res_y:.1f}m\n")
-        f.write(f" - QPS (Qtd. de Pixels por Segmento): {qps:.1f} px\n\n")
-        f.write("2. CLASSE: SEGMENTAR (Área de Interesse)\n")
-        f.write(f" - QTP (Qtd. Total de Pixels): {qtp:,}\n")
-        f.write(f" - Área Total: {qtp_ha:,.4f} hectares\n")
-        f.write(f" - QTS (Qtd. Total de Segmentos/Superpixels): {qts:,}\n\n")
-        f.write("3. CLASSE: NÃO SEGMENTAR (Restante do Município)\n")
-        f.write(f" - Quantidade Total de Pixels: {nao_seg_pixels:,}\n")
-        f.write(f" - Área Total: {nao_seg_ha:,.4f} hectares\n")
-        f.write("=========================================================\n")
-    print(f"✅ Relatório TXT atualizado: {relatorio_txt_path}", flush=True)
-
-    print(f"\n3. Iniciando MaskSLIC e clonagem RAW de Altíssima Fidelidade...", flush=True)
     
-    temp_tif_local = f"/content/temp_slic_alta_fidelidade_{code_muni}_{ano_fim}.tif"
+    # Máscara total (Todo o município) para extrair todos os atributos
+    mask_muni = ((mask_seg == 1) | (mask_nao_seg == 1)).astype(np.uint8)
+    qps = 62.5
+
+    print(f"\n3. Iniciando SLIC Global e Extração de Atributos OBIA (Random Forest/SVM)...", flush=True)
+    temp_tif_local = f"/content/temp_slic_{code_muni}_{ano_fim}.tif"
     path_tif_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_ContornosBrancos_{ano_fim}.tif")
     
     tile_size = 1024 
     h, w = cbers_shape
-    blocos_y = int(np.ceil(h / tile_size))
-    blocos_x = int(np.ceil(w / tile_size))
-    total_blocos = blocos_y * blocos_x
+    total_blocos = int(np.ceil(h / tile_size)) * int(np.ceil(w / tile_size))
     
-    print(f"   🗺️  A grelha tem {total_blocos} blocos. Copiando dados RAW e metadados de cor...", flush=True)
-
+    df_list = []
+    global_seg_offset = 0
     bloco_atual = 0
 
     with rasterio.open(path_cbers) as src, rasterio.open(temp_tif_local, 'w', **cbers_meta) as dst:
         
-        # -------------------------------------------------------------
-        # CONFIGURAÇÕES METADADOS PARA O QGIS (Nomes das Bandas)
-        # -------------------------------------------------------------
         dst.set_band_description(1, "Red")
         dst.set_band_description(2, "Green")
         dst.set_band_description(3, "Blue")
-        if num_bands >= 4:
-            dst.set_band_description(4, "NIR")
-
-        # -------------------------------------------------------------
-        # INSERÇÃO MANUAL DO CONTRASTE (Como Strings para GDAL/QGIS)
-        # -------------------------------------------------------------
-        dst.update_tags(1, STATISTICS_MINIMUM="96",  STATISTICS_MAXIMUM="549")
-        dst.update_tags(2, STATISTICS_MINIMUM="121", STATISTICS_MAXIMUM="468")
-        dst.update_tags(3, STATISTICS_MINIMUM="163", STATISTICS_MAXIMUM="535")
+        if num_bands >= 4: dst.set_band_description(4, "NIR")
+        
+        # INSERÇÃO MANUAL COM OS DADOS EXATOS DO XML
+        dst.update_tags(1, STATISTICS_MINIMUM=str(min_r), STATISTICS_MAXIMUM=str(max_r))
+        dst.update_tags(2, STATISTICS_MINIMUM=str(min_g), STATISTICS_MAXIMUM=str(max_g))
+        dst.update_tags(3, STATISTICS_MINIMUM=str(min_b), STATISTICS_MAXIMUM=str(max_b))
 
         for y in range(0, h, tile_size):
             for x in range(0, w, tile_size):
                 bloco_atual += 1
-                
                 h_janela = min(tile_size, h - y)
                 w_janela = min(tile_size, w - x)
                 window = Window(x, y, w_janela, h_janela)
                 
-                mask_tile = mask_seg[y:y+h_janela, x:x+w_janela]
-                qtp_tile = np.sum(mask_tile)
+                mask_muni_tile = mask_muni[y:y+h_janela, x:x+w_janela]
+                qtp_muni_tile = np.sum(mask_muni_tile)
                 
-                rgb_raw = src.read(window=window) 
-
-                if qtp_tile > 0:
-                    qts_tile = int(qtp_tile / qps)
+                rgbnir_raw = src.read(window=window) 
+                
+                if qtp_muni_tile > 0:
+                    qts_tile = int(qtp_muni_tile / qps)
                     if qts_tile > 0:
-                        rgb_slic = np.moveaxis(rgb_raw[:3], 0, -1).astype(np.float32)
+                        rgbnir_ch_last = np.moveaxis(rgbnir_raw, 0, -1)
+                        
+                        rgb_slic = rgbnir_ch_last[:, :, :3].astype(np.float32)
                         tile_max = rgb_slic.max()
-                        if tile_max > 0:
-                            rgb_slic /= tile_max 
+                        if tile_max > 0: rgb_slic /= tile_max 
                             
-                        segmentos_tile = slic(rgb_slic, n_segments=qts_tile, compactness=10, mask=(mask_tile == 1), start_label=1, max_num_iter=5)
+                        segmentos_tile = slic(rgb_slic, n_segments=qts_tile, compactness=10, mask=(mask_muni_tile == 1), start_label=1, max_num_iter=5)
+                        
+                        if np.any(segmentos_tile > 0):
+                            mask_seg_tile = mask_seg[y:y+h_janela, x:x+w_janela]
+                            
+                            validos = segmentos_tile > 0
+                            segmentos_tile[validos] += global_seg_offset
+                            
+                            # Extração de estatísticas
+                            props = regionprops_table(segmentos_tile, intensity_image=rgbnir_ch_last, properties=('label', 'area', 'intensity_mean'))
+                            props_mask = regionprops_table(segmentos_tile, intensity_image=mask_seg_tile, properties=('label', 'intensity_mean'))
+                            
+                            df_tile = pd.DataFrame({
+                                'ID_Segmento': props['label'],
+                                'Area_px': props['area'],
+                                'Prop_Floresta': props_mask['intensity_mean'],
+                                'Mean_R': props['intensity_mean-0'],
+                                'Mean_G': props['intensity_mean-1'],
+                                'Mean_B': props['intensity_mean-2']
+                            })
+                            if num_bands >= 4:
+                                df_tile['Mean_NIR'] = props['intensity_mean-3']
+                                
+                            df_list.append(df_tile)
+                            global_seg_offset = df_tile['ID_Segmento'].max()
+
+                        # Usa os valores máximos reais extraídos do XML para a borda branca 
                         contornos_tile = find_boundaries(segmentos_tile, mode='inner')
+                        rgbnir_raw[0][contornos_tile] = max_r
+                        rgbnir_raw[1][contornos_tile] = max_g
+                        rgbnir_raw[2][contornos_tile] = max_b
                         
-                        # Aplica o Branco proporcional aos limites exatos do QGIS (Evitando o valor 65535)
-                        rgb_raw[0][contornos_tile] = 549 # Red
-                        rgb_raw[1][contornos_tile] = 468 # Green
-                        rgb_raw[2][contornos_tile] = 535 # Blue
-                        
-                        print(f"   ✅ [Bloco {bloco_atual}/{total_blocos}] -> Contornos equilibrados inseridos no RAW.", flush=True)
+                        print(f"   ✅ [Bloco {bloco_atual}/{total_blocos}] -> Extraídos IDs e atributos.", flush=True)
                 else:
                     if bloco_atual % 20 == 0:
-                        print(f"   ⏩ [Bloco {bloco_atual}/{total_blocos}] -> Copiando áreas RAW intactas...", flush=True)
+                        print(f"   ⏩ [Bloco {bloco_atual}/{total_blocos}] -> Ignorando áreas vazias...", flush=True)
 
-                dst.write(rgb_raw, window=window)
-
-                del rgb_raw, mask_tile
+                dst.write(rgbnir_raw, window=window)
+                del rgbnir_raw, mask_muni_tile
                 gc.collect()
 
-    print("\n4. A transferir a imagem RAW final para o Google Drive...", flush=True)
     shutil.move(temp_tif_local, path_tif_slic)
-    print(f"✅ Imagem GeoTIFF guardada com configuração de contraste corrigida em: {path_tif_slic}", flush=True)
+    print(f"\n✅ Imagem pronta e configurada para o QGIS em: {path_tif_slic}", flush=True)
 
-    print("5. A gerar pré-visualização rápida (PNG)...", flush=True)
-    path_png_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_Preview_{ano_fim}.png")
+    print("\n4. Calculando HoR, Classes e finalizando Relatórios OBIA...", flush=True)
+    df_all = pd.concat(df_list, ignore_index=True)
     
-    with rasterio.open(path_tif_slic) as src:
-        passo = max(1, src.width // 3000)
-        out_shape = (src.count, src.height // passo, src.width // passo)
-        preview_rgb = src.read(out_shape=out_shape).astype(np.float32)
-        preview_rgb = np.moveaxis(preview_rgb[:3], 0, -1) 
+    # Cálculos OBIA
+    df_all['Classe'] = np.where(df_all['Prop_Floresta'] >= 0.5, 'Floresta', 'Nao_Floresta')
+    df_all['HoR'] = np.where(df_all['Prop_Floresta'] >= 0.5, df_all['Prop_Floresta'], 1.0 - df_all['Prop_Floresta'])
+    df_all['HoR_perc'] = df_all['HoR'] * 100.0
+
+    def classificar_grupo(hor):
+        if hor >= 99.9: return 'Perfeitos'
+        elif hor >= 70.0: return 'Uteis'
+        else: return 'Nao Uteis'
         
-        p2, p98 = np.percentile(preview_rgb[preview_rgb > 0], (2, 98))
-        if p98 > p2:
-            preview_rgb = np.clip((preview_rgb - p2) / (p98 - p2), 0, 1)
+    df_all['Grupo'] = df_all['HoR_perc'].apply(classificar_grupo)
+    
+    # Exporta CSV
+    colunas_finais = ['ID_Segmento', 'Classe', 'HoR_perc', 'Grupo', 'Area_px', 'Mean_R', 'Mean_G', 'Mean_B']
+    if num_bands >= 4: colunas_finais.append('Mean_NIR')
+    df_all[colunas_finais].to_csv(path_csv_obia, index=False, float_format='%.2f')
+    print(f"✅ Arquivo CSV (Random Forest/SVM) salvo em: {path_csv_obia}")
 
-    fig, ax = plt.subplots(figsize=(10, 10))
-    ax.imshow(preview_rgb)
-    ax.axis('off')
-    plt.savefig(path_png_slic, bbox_inches='tight', pad_inches=0, dpi=200)
-    plt.close()
+    # Gera Relatório Agrupado TXT
+    resumo = df_all.groupby('Grupo').agg(
+        Qtd=('ID_Segmento', 'count'),
+        Area_Media=('Area_px', 'mean'),
+        HoR_Medio=('HoR_perc', 'mean')
+    ).reindex(['Perfeitos', 'Uteis', 'Nao Uteis'], fill_value=0)
 
-    print(f"✅ Pré-visualização PNG salva em: {path_png_slic}", flush=True)
-    print("\n🎉 Processo 100% concluído! O contraste agora está protegido.", flush=True)
+    with open(relatorio_txt_path, 'w', encoding='utf-8') as f:
+        f.write("=========================================================\n")
+        f.write(f" RELATÓRIO DE SEGMENTAÇÃO OBIA E AVALIAÇÃO HoR - {ano_fim}\n")
+        f.write("=========================================================\n")
+        f.write(f"Município / Código: {code_muni}\n\n")
+        f.write("1. PARÂMETROS BASE:\n")
+        f.write(f" - Resolução do Pixel: {pixel_res_x:.1f}m x {pixel_res_y:.1f}m\n")
+        f.write(f" - QPS Alvo: {qps:.1f} px\n\n")
+        
+        f.write("2. ESTATÍSTICAS DOS SUPERPIXELS (AVALIAÇÃO HoR)\n")
+        f.write(f" - Segmentos Perfeitos (HoR = 100%): {resumo.loc['Perfeitos', 'Qtd']:,} segs | Tamanho Médio: {resumo.loc['Perfeitos', 'Area_Media']:.1f} px | HoR Médio: {resumo.loc['Perfeitos', 'HoR_Medio']:.1f}%\n")
+        f.write(f" - Segmentos Úteis (70% <= HoR < 100%): {resumo.loc['Uteis', 'Qtd']:,} segs | Tamanho Médio: {resumo.loc['Uteis', 'Area_Media']:.1f} px | HoR Médio: {resumo.loc['Uteis', 'HoR_Medio']:.1f}%\n")
+        f.write(f" - Segmentos Não Úteis (HoR < 70%): {resumo.loc['Nao Uteis', 'Qtd']:,} segs | Tamanho Médio: {resumo.loc['Nao Uteis', 'Area_Media']:.1f} px | HoR Médio: {resumo.loc['Nao Uteis', 'HoR_Medio']:.1f}%\n")
+        f.write("=========================================================\n")
+    print(f"✅ Relatório TXT gerado em: {relatorio_txt_path}", flush=True)
+
+    print("\n🎉 Todos os relatórios finalizados! A estrutura OBIA está pronta para a classificação.")
 
 if __name__ == "__main__":
     main()
