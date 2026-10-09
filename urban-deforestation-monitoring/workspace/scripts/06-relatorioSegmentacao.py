@@ -72,7 +72,7 @@ def main():
     mask_nao_seg = rasterize([(geom, 1) for geom in geom_nao_seg], out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8)
 
     qtp = int(np.sum(mask_seg == 1))
-    qps = 62.5
+    qps = 62.5*4
     qts = int(qtp / qps) if qps > 0 else 0
     qtp_ha = qtp * pixel_area_ha
 
