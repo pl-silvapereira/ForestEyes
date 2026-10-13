@@ -73,7 +73,7 @@ def main():
     
     # Máscara total (Todo o município) para extrair todos os atributos
     mask_muni = ((mask_seg == 1) | (mask_nao_seg == 1)).astype(np.uint8)
-    qps = 62.5
+    qps = 250.0
 
     print(f"\n3. Iniciando SLIC Global e Extração de Atributos OBIA (Random Forest/SVM)...", flush=True)
     temp_tif_local = f"/content/temp_slic_{code_muni}_{ano_fim}.tif"
