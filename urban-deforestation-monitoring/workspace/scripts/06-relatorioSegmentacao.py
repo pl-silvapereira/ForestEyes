@@ -37,7 +37,7 @@ def main():
     path_cbers = os.path.join(project_root, "data", "output", "pansharpening", ano_fim, f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif")
     
     path_csv_obia = os.path.join(output_report_dir, f"{code_muni}_Atributos_OBIA_{ano_fim}.csv")
-    relatorio_txt_path = os.path.join(output_report_dir, f"{code_muni}_Relatorio_MaskSLIC_{ano_fim}.txt")
+    relatorio_txt_path = os.path.join(output_report_dir, f"{code_muni}_Relatorio_MaskSLIC_HoR_{ano_fim}.txt")
 
     if not os.path.exists(path_shp_binario) or not os.path.exists(path_cbers):
         print("[ERRO CRÍTICO] Arquivos base não encontrados.", flush=True)
