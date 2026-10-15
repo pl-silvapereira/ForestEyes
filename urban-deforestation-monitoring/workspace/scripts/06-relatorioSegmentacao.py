@@ -66,7 +66,7 @@ def main():
     relatorio_tabela_csv = os.path.join(output_report_dir, f"{code_muni}_Relatorio_Tabela_Detalhada_{ano_fim}.csv")
 
     print("=" * 80, flush=True)
-    print(f"📄 SCRIPT 06 - RELATÓRIO MATRICIAL OBIA (EXIGÊNCIA DO PROFESSOR) - {ano_fim}", flush=True)
+    print(f"📄 SCRIPT 06 - RELATÓRIO MATRICIAL OBIA (CRITÉRIO HoR AJUSTADO) - {ano_fim}", flush=True)
     print("=" * 80, flush=True)
 
     min_Hor = 0.7
@@ -208,26 +208,22 @@ def main():
     n_perfect_segs = (df_all['HoR'] == 1.0).sum()
     perc_perfect = (n_perfect_segs / total_segs * 100) if total_segs > 0 else 0.0
 
-    auditoria_str = f"x{code_muni}: total_segs = {total_segs} | good_segs = {good_segs} | bad_segs = {bad_segs} | bad_segs because of HoR = {bad_by_hor} | bad_sgs because of size = {bad_by_size} | perfect_segs = {n_perfect_segs} ({perc_perfect:.2f}%)"
+    auditoria_str = f"x{code_muni}: total_segs = {total_segs} | good_segs = {good_segs} | bad_segs = {bad_segs} | bad_segs because of HoR = {bad_by_hor} | bad_segs because of size = {bad_by_size} | perfect_segs = {n_perfect_segs} ({perc_perfect:.2f}%)"
 
-    # Filtrar apenas os segmentos bons para a tabela detalhada
     df_good = df_all[good_mask].copy()
-    
-    # Conversão de pixels para metros quadrados (1 pixel CBERS 2m = 4 m2)
     df_good['Size_m2'] = df_good['Size'] * 4.0
 
-    # Categorias de HoR solicitadas
-    # Perfeito: HoR == 1.0
-    # Útil: 0.7 < HoR < 1.0
-    # Não Útil: HoR <= 0.7 (embora já filtrado, fica estruturado)
-    def categoria_hor(h):
-        if h >= 0.9999: return 'Perfeito'
-        elif h > 0.7: return 'Util'
-        else: return 'Nao Util'
+    # Aplicação estricta da regra do HoR informada
+    def categoria_hor_exata(h):
+        if h >= 0.9999: 
+            return 'Perfeito'
+        elif h > 0.7: 
+            return 'Util'
+        else: 
+            return 'Nao Util'
 
-    df_good['Categoria_HoR'] = df_good['HoR'].apply(categoria_hor)
+    df_good['Categoria_HoR'] = df_good['HoR'].apply(categoria_hor_exata)
 
-    # Construção da Matriz Resumo por Classe (floresta / nao floresta)
     linhas_tabela = []
     for classe in ['floresta', 'nao floresta']:
         df_c = df_good[df_good['Class'] == classe]
@@ -262,7 +258,6 @@ def main():
     df_resumo_tabela = pd.DataFrame(linhas_tabela)
     df_resumo_tabela.to_csv(relatorio_tabela_csv, index=False, float_format='%.4f')
 
-    # Salva os CSVs clássicos ordenados por HoR nas pastas do professor
     df_forest = df_good[df_good['Class'] == 'floresta'].sort_values(by='HoR', ascending=False)
     df_non_forest = df_good[df_good['Class'] == 'nao floresta'].sort_values(by='HoR', ascending=False)
     
@@ -272,13 +267,13 @@ def main():
     df_forest[colunas_finais].to_csv(path_csv_forest, index=False, float_format='%.6f')
     df_non_forest[colunas_finais].to_csv(path_csv_non_forest, index=False, float_format='%.6f')
 
-    # Escreve o Relatório TXT formatado como Tabela legível
     with open(relatorio_txt_path, 'w', encoding='utf-8') as f:
         f.write("=========================================================================================\n")
         f.write(f" RELATÓRIO ESTATÍSTICO DE SEGMENTAÇÃO OBIA E HoR - {ano_fim}\n")
         f.write("=========================================================================================\n")
         f.write(f"Município: {code_muni} | Gabarito: MapBiomas 10m\n")
-        f.write(f"Filtros: min_size = {min_size_seg_threshold} px ({min_size_seg_threshold*4} m2) | min_HoR = {min_Hor}\n\n")
+        f.write(f"Critério HoR: Perfeito (=100%) | Útil (<100% e >70%) | Não Útil (<=70%)\n")
+        f.write(f"Filtros: min_size = {min_size_seg_threshold} px ({min_size_seg_threshold*4} m2)\n\n")
         f.write(auditoria_str + "\n\n")
         f.write("TABELA RESUMO DE SEGMENTOS (MÉTRICAS POR CLASSE):\n")
         f.write("-" * 105 + "\n")
@@ -287,9 +282,9 @@ def main():
             f.write(f"Classe: {row['Classe'].upper()}\n")
             f.write(f" - Segmentos Válidos: {row['Qtd_Total_Segmentos']}\n")
             f.write(f" - Tamanho (Max / Min / Médio): {row['Tamanho_Max_m2']:.2f} m² | {row['Tamanho_Min_m2']:.2f} m² | {row['Tamanho_Medio_m2']:.2f} m²\n")
-            f.write(f" - HoR Perfeito (100%): {row['Qtd_HoR_Perfeito']} segmentos\n")
-            f.write(f" - HoR Útil (70% - 99%): {row['Qtd_HoR_Util']} segmentos (Taxa Média: {row['Taxa_Media_HoR_Util']*100:.2f}%)\n")
-            f.write(f" - HoR Não Útil (< 70%): {row['Qtd_HoR_Nao_Util']} segmentos (Taxa Média: {row['Taxa_Media_HoR_Nao_Util']*100:.2f}%)\n")
+            f.write(f" - HoR Perfeito (= 100%): {row['Qtd_HoR_Perfeito']} segmentos\n")
+            f.write(f" - HoR Útil (< 100% e > 70%): {row['Qtd_HoR_Util']} segmentos (Taxa Média: {row['Taxa_Media_HoR_Util']*100:.2f}%)\n")
+            f.write(f" - HoR Não Útil (<= 70%): {row['Qtd_HoR_Nao_Util']} segmentos (Taxa Média: {row['Taxa_Media_HoR_Nao_Util']*100:.2f}%)\n")
             f.write("-" * 105 + "\n")
             
     print(f"✅ Relatório em Tabela gerado com sucesso em: {relatorio_tabela_csv}")
