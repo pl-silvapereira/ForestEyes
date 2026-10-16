@@ -45,14 +45,14 @@ print(f"Diretório de saída garantido em: {OUT_DIR}")
 def preparar_dataframe(df_path, label_alvo):
     df = pd.read_csv(df_path)
     
-    # Listas de possíveis nomes para as colunas de ID e Banda
-    possiveis_ids = ['Segment_ID', 'segment_id', 'id', 'ID', 'Segmento', 'segment']
+    # Listas de possíveis nomes para as colunas de ID e Banda (agora inclui Segment_label)
+    possiveis_ids = ['Segment_label', 'segment_label', 'Segment_ID', 'segment_id', 'id', 'ID', 'Segmento', 'segment']
     possiveis_bandas = ['Band', 'band', 'banda', 'Banda']
     
-    # Busca qual desses nomes realmente existe no DataFrame
     col_segmento = next((c for c in possiveis_ids if c in df.columns), None)
     col_banda = next((c for c in possiveis_bandas if c in df.columns), None)
 
+    # Se os dados estiverem separados por banda (formato longo), faz o pivot
     if col_segmento and col_banda:
         cols_features = [c for c in df.columns if c not in [col_segmento, col_banda, 'geometry']]
         df_flat = df.pivot(index=col_segmento, columns=col_banda, values=cols_features)
@@ -75,7 +75,7 @@ df_non_forest = preparar_dataframe(PATH_NON_FOREST, label_alvo=0)
 df_completo = pd.concat([df_forest, df_non_forest], ignore_index=True)
 
 # Identificar dinamicamente a coluna de ID no dataframe final
-possiveis_ids_final = ['Segment_ID', 'segment_id', 'id', 'ID', 'Segmento', 'segment']
+possiveis_ids_final = ['Segment_label', 'segment_label', 'Segment_ID', 'segment_id', 'id', 'ID', 'Segmento', 'segment']
 col_id = next((col for col in possiveis_ids_final if col in df_completo.columns), None)
 
 if col_id is None:
@@ -86,13 +86,14 @@ print(f"Coluna de ID detectada com sucesso: '{col_id}'")
 ids_completo = df_completo[col_id].values
 y = df_completo['Target'].values
 
-# Filtrar colunas puramente numéricas para o treinamento
-cols_to_drop = ['Target', col_id, 'Class', 'classe', 'Label']
+# Filtrar colunas indesejadas (incluindo Region caso seja texto)
+cols_to_drop = ['Target', col_id, 'Class', 'classe', 'Label', 'Region']
 df_features = df_completo.drop(columns=[c for c in cols_to_drop if c in df_completo.columns], errors='ignore')
 df_features_numericas = df_features.select_dtypes(include=[np.number])
 X = df_features_numericas.values
 
 print(f"Amostras: {len(X)} | Features numéricas processadas: {X.shape[1]}")
+print(f"Features utilizadas: {list(df_features_numericas.columns)}")
 
 # =====================================================================
 # 4. TREINAMENTO DO MODELO SVM
@@ -139,10 +140,12 @@ df_resultados = pd.DataFrame({col_id: ids_completo, 'Predicao': y_pred_all})
 # Carregar o Shapefile original
 gdf_seg = gpd.read_file(SHP_SEGMENTOS)
 
-# Buscar dinamicamente a coluna de ID dentro do Shapefile
+# Buscar dinamicamente a coluna de ID dentro do Shapefile (pode ter nome diferente do CSV)
 col_shp_id = next((c for c in possiveis_ids_final if c in gdf_seg.columns), None)
 if col_shp_id is None:
     raise ValueError(f"Coluna de ID não encontrada no Shapefile. Colunas disponíveis: {list(gdf_seg.columns)}")
+
+print(f"Cruzando dados: CSV({col_id}) <--> Shapefile({col_shp_id})")
 
 # Fazer a junção (Merge)
 gdf_map = gdf_seg.merge(df_resultados, left_on=col_shp_id, right_on=col_id, how='left')
