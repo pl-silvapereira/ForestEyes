@@ -39,7 +39,7 @@ def preparar_dataframe(df_path, label_alvo):
 
     # Se os dados estiverem em formato longo (1 linha por banda do segmento)
     if col_segmento and col_banda:
-        # Pega as colunas que são atributos (exclui ID e Banda)
+        # Pega as colunas que são atributos (exclui ID, Banda e geometria se houver)
         cols_features = [c for c in df.columns if c not in [col_segmento, col_banda, 'geometry']]
         
         # Faz o Pivot: Transforma as bandas em novas colunas de atributos
@@ -70,22 +70,36 @@ df_non_forest_final = preparar_dataframe(PATH_NON_FOREST, label_alvo=0)
 # Une os dois dataframes em um conjunto de dados completo
 df_completo = pd.concat([df_forest_final, df_non_forest_final], ignore_index=True)
 
-# Identificando colunas de features (removendo IDs e Target)
+# 1. Isolamos o vetor 'y' (Target numérico: 0 e 1)
+y = df_completo['Target'].values
+
+# 2. Criamos uma lista com as colunas que NÃO são atributos (features)
 cols_to_drop = ['Target']
 if 'Segment_ID' in df_completo.columns: cols_to_drop.append('Segment_ID')
 if 'segment_id' in df_completo.columns: cols_to_drop.append('segment_id')
+if 'Class' in df_completo.columns: cols_to_drop.append('Class')
+if 'classe' in df_completo.columns: cols_to_drop.append('classe')
+if 'Label' in df_completo.columns: cols_to_drop.append('Label')
 
-X = df_completo.drop(columns=cols_to_drop).values # Matriz de atributos numéricos
-y = df_completo['Target'].values                  # Vetor de rótulos
+# 3. Removemos as colunas indesejadas (ignorando erros se elas não existirem)
+df_features = df_completo.drop(columns=cols_to_drop, errors='ignore')
 
-print(f"Total de Amostras: {len(X)} | Total de Features por Superpixel: {X.shape[1]}")
+# 4. FILTRO DE SEGURANÇA: Selecionar estritamente colunas com tipos numéricos (int, float)
+# Isso ignora automaticamente qualquer coluna de texto ('floresta') que tenha sobrado
+df_features_numericas = df_features.select_dtypes(include=[np.number])
+
+# 5. Transformamos no array X
+X = df_features_numericas.values
+
+print(f"Total de Amostras: {len(X)}")
+print(f"Total de Features Estritamente Numéricas por Superpixel: {X.shape[1]}")
 print(f"Distribuição Real - Floresta: {sum(y==1)} | Não-Floresta: {sum(y==0)}")
 
 # =====================================================================
 # 4. DIVISÃO EM TREINO E TESTE
 # =====================================================================
 # Dividindo dados (Ex: 70% Treino, 30% Teste). 
-# stratify=y garante que a proporção de floresta/não-floresta seja mantida nos dois conjuntos.
+# stratify=y garante que a proporção das classes seja mantida nos conjuntos.
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.30, random_state=42, stratify=y)
 
 print(f"\nAmostras de Treino: {len(X_train)} | Amostras de Teste: {len(X_test)}")
@@ -105,7 +119,7 @@ X_test_scaled = scaler.transform(X_test)
 # =====================================================================
 print("Iniciando treinamento do classificador SVM (Kernel RBF)...")
 
-# class_weight='balanced' ajusta pesos internamente se houver mais Não-Floresta do que Floresta
+# class_weight='balanced' ajusta pesos internamente devido ao desbalanceamento das classes
 svm_model = SVC(kernel='rbf', C=1.0, gamma='scale', class_weight='balanced', random_state=42)
 svm_model.fit(X_train_scaled, y_train)
 
