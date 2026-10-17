@@ -1,223 +1,263 @@
+import sys
 import os
-import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-
-# Importações Geoespaciais
+import pandas as pd
 import geopandas as gpd
 import rasterio
-from rasterio.mask import mask
-from matplotlib.colors import ListedColormap
-
-# Importações do Scikit-Learn
+from rasterio.windows import Window
+from rasterio.features import shapes
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from sklearn.svm import SVC
-from sklearn.metrics import (
-    classification_report, 
-    balanced_accuracy_score, 
-    confusion_matrix, 
-    ConfusionMatrixDisplay
-)
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import LinearSVC
+from sklearn.metrics import accuracy_score
+from dotenv import load_dotenv
 
-# =====================================================================
-# 1. CAMINHOS E DIRETÓRIOS (GOOGLE DRIVE)
-# =====================================================================
-BASE_DIR = '/content/drive/MyDrive/Mestrado/04-Projeto ForestEyes/ForestEyes/urban-deforestation-monitoring/workspace'
+def main():
+    if len(sys.argv) < 4:
+        print("❌ Erro: Parâmetros insuficientes.")
+        print("Uso correto: python 07-preClassificacao.py <code_muni> <ano_inicio> <ano_fim>")
+        sys.exit(1)
 
-# Entradas CSV (Características extraídas)
-PATH_FOREST = f'{BASE_DIR}/reports/dataframes_csv/forest/df_forest_sort_3549904_2024.csv'
-PATH_NON_FOREST = f'{BASE_DIR}/reports/dataframes_csv/non-forest/df_non-forest_sort_3549904_2024.csv'
+    code_muni = str(sys.argv[1])
+    ano_inicio = str(sys.argv[2])
+    ano_fim = str(sys.argv[3])
 
-# Entradas Espaciais (Base para cruzar as predições e gerar os mapas)
-# ATUALIZADO: Usando o shapefile correto que contém os polígonos dos superpixels
-SHP_SUPERPIXELS = f'{BASE_DIR}/data/output/classification/2024/3549904_Classificado_ForestEyes_2024.shp'
-TIF_ORIGINAL = f'{BASE_DIR}/data/output/pansharpening/2024/3549904_2024_CBERS_TRUE_COLOR_2M.tif'
+    load_dotenv()
+    project_root = os.getenv("PROJECT_ROOT")
+    if not project_root:
+        diretorio_scripts = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(diretorio_scripts)
 
-# Saídas (Onde os arquivos gerados serão salvos)
-OUT_DIR = f'{BASE_DIR}/data/reports/2024_Classificacao_Desmatamento'
-
-os.makedirs(OUT_DIR, exist_ok=True)
-print(f"Diretório de saída garantido em: {OUT_DIR}")
-
-# =====================================================================
-# 2. FUNÇÃO DE REESTRUTURAÇÃO COM BUSCA DINÂMICA
-# =====================================================================
-def preparar_dataframe(df_path, label_alvo):
-    df = pd.read_csv(df_path)
+    # Diretórios e Caminhos
+    output_seg_dir = os.path.join(project_root, "data", "output", "segmentation", ano_fim)
+    output_class_dir = os.path.join(project_root, "data", "output", "classification", ano_fim)
+    output_report_dir = os.path.join(project_root, "reports")
+    dir_forest = os.path.join(output_report_dir, "dataframes_csv", "forest")
+    dir_non_forest = os.path.join(output_report_dir, "dataframes_csv", "non-forest")
     
-    # Listas de possíveis nomes para as colunas de ID e Banda
-    possiveis_ids = ['Segment_label', 'segment_label', 'Segment_ID', 'segment_id', 'id', 'ID', 'Segmento', 'segment']
-    possiveis_bandas = ['Band', 'band', 'banda', 'Banda']
+    os.makedirs(output_class_dir, exist_ok=True)
+    os.makedirs(output_report_dir, exist_ok=True)
+
+    # Ficheiros de Entrada
+    path_cbers = os.path.join(project_root, "data", "output", "pansharpening", ano_fim, f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif")
+    path_ids_tif = os.path.join(output_seg_dir, f"{code_muni}_IDs_Superpixels_{ano_fim}.tif")
+    path_csv_forest = os.path.join(dir_forest, f"df_forest_sort_{code_muni}_{ano_fim}.csv")
+    path_csv_non_forest = os.path.join(dir_non_forest, f"df_non-forest_sort_{code_muni}_{ano_fim}.csv")
+
+    if not os.path.exists(path_ids_tif) or not os.path.exists(path_csv_forest):
+        print(f"❌ [ERRO] Ficheiros do Script 06 não encontrados. Certifique-se de executar o SCRIPT 06 primeiro.")
+        sys.exit(1)
+
+    print("=" * 80, flush=True)
+    print(f"🌲 SCRIPT 07 - MACHINE LEARNING OBIA RÁPIDO (RF & SVM) - {ano_fim}", flush=True)
+    print("=" * 80, flush=True)
+
+    # 1. Carregar CSVs e Preparar Dados
+    print("1. A carregar os atributos extraídos pelo Script 06...", flush=True)
+    df_f = pd.read_csv(path_csv_forest)
+    df_nf = pd.read_csv(path_csv_non_forest)
     
-    col_segmento = next((c for c in possiveis_ids if c in df.columns), None)
-    col_banda = next((c for c in possiveis_bandas if c in df.columns), None)
+    # 1 = Floresta Real, 0 = Não Floresta Real
+    df_f['Classe_Real'] = 1
+    df_nf['Classe_Real'] = 0
+    df_all = pd.concat([df_f, df_nf], ignore_index=True)
 
-    # Se os dados estiverem separados por banda (formato longo), faz o pivot
-    if col_segmento and col_banda:
-        cols_features = [c for c in df.columns if c not in [col_segmento, col_banda, 'geometry']]
-        df_flat = df.pivot(index=col_segmento, columns=col_banda, values=cols_features)
-        df_flat.columns = [f"{feat}_B{band}" for feat, band in df_flat.columns]
-        df_flat = df_flat.reset_index()
-        df = df_flat
+    # Selecionar apenas features numéricas disponíveis (Mean RGB/NIR, Size, HoR)
+    features_cols = df_all.select_dtypes(include=[np.number]).columns.tolist()
+    features_cols = [c for c in features_cols if c not in ['Segment_label', 'Classe_Real']]
     
-    if 'geometry' in df.columns:
-        df = df.drop(columns=['geometry'])
-        
-    df['Target'] = label_alvo
-    return df
+    X = df_all[features_cols]
+    y = df_all['Classe_Real']
+    ids = df_all['Segment_label']
 
-# =====================================================================
-# 3. CARREGAMENTO E PREPARAÇÃO DA MATRIZ
-# =====================================================================
-print("\nCarregando dados estruturados...")
-df_forest = preparar_dataframe(PATH_FOREST, label_alvo=1)
-df_non_forest = preparar_dataframe(PATH_NON_FOREST, label_alvo=0)
-df_completo = pd.concat([df_forest, df_non_forest], ignore_index=True)
+    # Regra: 30% Treino, 70% Predição
+    X_train, X_test, y_train, y_test, id_train, id_test = train_test_split(X, y, ids, test_size=0.70, random_state=42, stratify=y)
+    
+    print(f" -> Conjunto de Treino (Amarelo/Referência): {len(id_train):,} superpixels (30%)")
+    print(f" -> Conjunto de Predição (Verde/Vermelho): {len(id_test):,} superpixels (70%)")
 
-# Identificar dinamicamente a coluna de ID no dataframe final
-possiveis_ids_final = ['Segment_label', 'segment_label', 'Segment_ID', 'segment_id', 'id', 'ID', 'Segmento', 'segment']
-col_id = next((col for col in possiveis_ids_final if col in df_completo.columns), None)
+    # 2. Treino de Machine Learning
+    print("\n2. A iniciar o Treinamento de Inteligência Artificial...", flush=True)
+    
+    rf = RandomForestClassifier(n_estimators=50, random_state=42, n_jobs=-1)
+    rf.fit(X_train, y_train)
+    rf_pred = rf.predict(X_test)
+    rf_acc = accuracy_score(y_test, rf_pred)
+    print(f" ✔️ Acurácia Random Forest: {rf_acc * 100:.2f}%")
 
-if col_id is None:
-    raise ValueError(f"Nenhuma coluna de ID encontrada no CSV. Colunas: {list(df_completo.columns)}")
+    svm = LinearSVC(random_state=42, dual=False)
+    svm.fit(X_train, y_train)
+    svm_pred = svm.predict(X_test)
+    svm_acc = accuracy_score(y_test, svm_pred)
+    print(f" ✔️ Acurácia SVM: {svm_acc * 100:.2f}%")
 
-print(f"Coluna de ID detectada com sucesso no CSV: '{col_id}'")
-ids_completo = df_completo[col_id].values
-y = df_completo['Target'].values
+    # Mapeamento Rápido Numpy (Utilizando RF)
+    max_id = df_all['Segment_label'].max()
+    mapa_cores_ids = np.zeros(max_id + 1, dtype=np.uint8)
+    
+    # Classes para o Raster:
+    # 0 = Fundo, 1 = Floresta (Verde), 2 = Não Floresta (Vermelho), 3 = Treino (Amarelo)
+    mapa_cores_ids[id_test[rf_pred == 1].values] = 1  # Floresta
+    mapa_cores_ids[id_test[rf_pred == 0].values] = 2  # Desmatamento
+    mapa_cores_ids[id_train.values] = 3               # Treino
 
-# Filtrar colunas indesejadas
-cols_to_drop = ['Target', col_id, 'Class', 'classe', 'Label', 'Region']
-df_features = df_completo.drop(columns=[c for c in cols_to_drop if c in df_completo.columns], errors='ignore')
-df_features_numericas = df_features.select_dtypes(include=[np.number])
-X = df_features_numericas.values
+    # 3. Geração Espacial Otimizada (Raster)
+    print("\n3. A gerar o Mapa Raster Espacial bloco a bloco...", flush=True)
+    path_tif_class = os.path.join(output_class_dir, f"{code_muni}_Classificacao_OBIA_Raster_{ano_fim}.tif")
+    temp_class_1band = f"/content/temp_class_1band_{code_muni}.tif"
+    
+    with rasterio.open(path_cbers) as src_cbers:
+        cbers_meta = src_cbers.meta.copy()
+        cbers_crs = src_cbers.crs
+        h, w = src_cbers.shape
 
-print(f"Amostras: {len(X)} | Features numéricas processadas: {X.shape[1]}")
+    meta_class = cbers_meta.copy()
+    meta_class.update(dtype=rasterio.uint8, count=3, photometric='RGB', nodata=0)
+    
+    meta_1band = cbers_meta.copy()
+    meta_1band.update(dtype=rasterio.uint8, count=1, nodata=0)
 
-# =====================================================================
-# 4. TREINAMENTO DO MODELO SVM
-# =====================================================================
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.30, random_state=42, stratify=y)
+    tile_size = 1024
+    with rasterio.open(path_ids_tif) as src_ids, \
+         rasterio.open(path_tif_class, 'w', **meta_class) as dst_rgb, \
+         rasterio.open(temp_class_1band, 'w', **meta_1band) as dst_1b:
+         
+        for y_idx in range(0, h, tile_size):
+            for x_idx in range(0, w, tile_size):
+                w_janela, h_janela = min(tile_size, w - x_idx), min(tile_size, h - y_idx)
+                window = Window(x_idx, y_idx, w_janela, h_janela)
+                
+                bloco_ids = src_ids.read(1, window=window)
+                # Filtra valores fora do limite para evitar erros no Numpy
+                bloco_ids_validos = np.clip(bloco_ids, 0, max_id)
+                bloco_classes = mapa_cores_ids[bloco_ids_validos]
+                # Preserva o nodata original
+                bloco_classes[bloco_ids == 0] = 0
+                
+                r = np.zeros_like(bloco_classes, dtype=np.uint8)
+                g = np.zeros_like(bloco_classes, dtype=np.uint8)
+                b = np.zeros_like(bloco_classes, dtype=np.uint8)
+                
+                r[bloco_classes == 1], g[bloco_classes == 1], b[bloco_classes == 1] = 0, 255, 0       # Verde
+                r[bloco_classes == 2], g[bloco_classes == 2], b[bloco_classes == 2] = 255, 0, 0       # Vermelho
+                r[bloco_classes == 3], g[bloco_classes == 3], b[bloco_classes == 3] = 255, 255, 0     # Amarelo
+                
+                dst_rgb.write(r, 1, window=window)
+                dst_rgb.write(g, 2, window=window)
+                dst_rgb.write(b, 3, window=window)
+                dst_1b.write(bloco_classes, 1, window=window)
 
-scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
+    # 4. Vetorização (Shapefile e QML)
+    print("\n4. A vetorizar o resultado para o Shapefile QGIS...", flush=True)
+    path_shp_final = os.path.join(output_class_dir, f"{code_muni}_Mapeamento_Final_OBIA_{ano_fim}.shp")
+    
+    with rasterio.open(temp_class_1band) as src_1b:
+        image = src_1b.read(1)
+        results = (
+            {'properties': {'Classe_ID': v}, 'geometry': s}
+            for i, (s, v) in enumerate(shapes(image, mask=(image > 0), transform=src_1b.transform))
+        )
+        gdf_final = gpd.GeoDataFrame.from_features(list(results), crs=cbers_crs)
 
-print("\nTreinando classificador SVM (isso pode levar alguns instantes)...")
-svm_model = SVC(kernel='rbf', C=1.0, gamma='scale', class_weight='balanced', random_state=42)
-svm_model.fit(X_train_scaled, y_train)
+    # Mapeamento exato para o estilo QML (1=Floresta, 2=Não Floresta, 3=Treino)
+    dict_classes = {1: 'Ainda Floresta', 2: 'Nao eh mais Floresta', 3: 'Treino/Referencia'}
+    gdf_final['Classe'] = gdf_final['Classe_ID'].map(dict_classes)
+    gdf_final = gdf_final.dissolve(by='Classe').reset_index()
+    gdf_final.to_file(path_shp_final, index=False)
 
-# =====================================================================
-# 5. AVALIAÇÃO E EXPORTAÇÃO DE RELATÓRIOS TEXTUAIS E GRÁFICOS
-# =====================================================================
-y_pred = svm_model.predict(X_test_scaled)
-b_acc = balanced_accuracy_score(y_test, y_pred)
-class_names = ['Não-Floresta (0)', 'Floresta (1)']
-relatorio_txt = classification_report(y_test, y_pred, target_names=class_names)
+    qml_content = """<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
+<qgis version="3.28.0-Firenze" styleCategories="Symbology">
+  <renderer-v2 type="categorizedSymbol" attr="Classe" symbollevels="0">
+    <categories>
+      <category symbol="0" value="Ainda Floresta" label="Ainda Floresta (Amarelo)"/>
+      <category symbol="1" value="Nao eh mais Floresta" label="Nao eh mais Floresta (Vermelho)"/>
+      <category symbol="2" value="Treino/Referencia" label="Area de Treino (Cinza tracejado)"/>
+    </categories>
+    <symbols>
+      <symbol type="fill" name="0" clip_to_extent="1" force_rhr="0">
+        <layer pass="0" class="SimpleFill" locked="0">
+          <prop k="border_width_map_unit_scale" v="3x:0,0,0,0,0,0"/>
+          <prop k="color" v="255,255,0,0"/> <!-- Fundo Transparente -->
+          <prop k="outline_color" v="255,255,0,255"/> <!-- Borda Amarela -->
+          <prop k="outline_style" v="solid"/>
+          <prop k="outline_width" v="0.5"/>
+        </layer>
+      </symbol>
+      <symbol type="fill" name="1" clip_to_extent="1" force_rhr="0">
+        <layer pass="0" class="SimpleFill" locked="0">
+          <prop k="border_width_map_unit_scale" v="3x:0,0,0,0,0,0"/>
+          <prop k="color" v="255,0,0,0"/> <!-- Fundo Transparente -->
+          <prop k="outline_color" v="255,0,0,255"/> <!-- Borda Vermelha -->
+          <prop k="outline_style" v="solid"/>
+          <prop k="outline_width" v="0.5"/>
+        </layer>
+      </symbol>
+      <symbol type="fill" name="2" clip_to_extent="1" force_rhr="0">
+        <layer pass="0" class="SimpleFill" locked="0">
+          <prop k="border_width_map_unit_scale" v="3x:0,0,0,0,0,0"/>
+          <prop k="color" v="150,150,150,0"/>
+          <prop k="outline_color" v="150,150,150,255"/>
+          <prop k="outline_style" v="dash"/>
+          <prop k="outline_width" v="0.3"/>
+        </layer>
+      </symbol>
+    </symbols>
+  </renderer-v2>
+</qgis>"""
+    
+    path_qml = path_shp_final.replace(".shp", ".qml")
+    with open(path_qml, "w") as f:
+        f.write(qml_content)
+    
+    # 5. Gerar Imagem TIF do Desmatamento (Isolada)
+    print("\n5. A gerar a máscara TIF isolando as áreas de desmatamento...", flush=True)
+    path_tif_desmatamento = os.path.join(output_class_dir, f"{code_muni}_Mascara_Desmatamento_CBERS_{ano_fim}.tif")
+    
+    with rasterio.open(path_cbers) as src_rgb, \
+         rasterio.open(temp_class_1band) as src_1b, \
+         rasterio.open(path_tif_desmatamento, 'w', **cbers_meta) as dst_desm:
+         
+        for y_idx in range(0, h, tile_size):
+            for x_idx in range(0, w, tile_size):
+                w_janela, h_janela = min(tile_size, w - x_idx), min(tile_size, h - y_idx)
+                window = Window(x_idx, y_idx, w_janela, h_janela)
+                
+                rgb_raw = src_rgb.read(window=window)
+                bloco_class = src_1b.read(1, window=window)
+                
+                # Zera tudo o que NÃO for desmatamento (classe 2)
+                mask_apagar = (bloco_class != 2)
+                for band_idx in range(rgb_raw.shape[0]):
+                    rgb_raw[band_idx][mask_apagar] = 0
+                    
+                dst_desm.write(rgb_raw, window=window)
 
-cm = confusion_matrix(y_test, y_pred)
-disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
-fig_cm, ax_cm = plt.subplots(figsize=(6, 6))
-disp.plot(cmap=plt.cm.Greens, ax=ax_cm, values_format='d')
-plt.title('Matriz de Confusão: Superpixels MaskSLIC')
-plt.savefig(f'{OUT_DIR}/matriz_confusao.png', dpi=300, bbox_inches='tight')
-plt.close()
+    # 6. Relatório Final
+    print("\n6. A calcular áreas e gerar o Relatório Textual...", flush=True)
+    
+    # Cálculo em Hectares utilizando Size_m2
+    df_test = df_all.loc[df_all['Segment_label'].isin(id_test)]
+    area_total_ha = df_test['Size_m2'].sum() / 10000.0
+    area_mantida_ha = df_test.loc[rf_pred == 1, 'Size_m2'].sum() / 10000.0
+    area_nao_floresta_ha = df_test.loc[rf_pred == 0, 'Size_m2'].sum() / 10000.0
+    
+    path_txt_relatorio = os.path.join(output_report_dir, f"{code_muni}_Relatorio_IA_Desmatamento_{ano_fim}.txt")
+    with open(path_txt_relatorio, 'w', encoding='utf-8') as f:
+        f.write("=========================================================\n")
+        f.write(f" RELATÓRIO DE INTELIGÊNCIA ARTIFICIAL OBIA - {ano_fim}\n")
+        f.write("=========================================================\n")
+        f.write(f"Algoritmos de Aprendizado de Máquina (70% Teste / 30% Treino)\n\n")
+        f.write("1. PERFORMANCE DOS MODELOS:\n")
+        f.write(f"  - Random Forest (Acurácia Global): {rf_acc * 100:.2f}%\n")
+        f.write(f"  - Support Vector Machine (Acurácia Global): {svm_acc * 100:.2f}%\n\n")
+        f.write("2. RESULTADOS DO DESMATAMENTO (Baseado no Conjunto de Predição):\n")
+        f.write(f"  - Área Analisada (70%): {area_total_ha:,.2f} hectares\n")
+        f.write(f"  - Área que AINDA É FLORESTA: {area_mantida_ha:,.2f} hectares\n")
+        f.write(f"  - ÁREA NÃO FLORESTA (Possível Desmatamento): {area_nao_floresta_ha:,.2f} hectares\n")
+        f.write("=========================================================\n")
 
-# =====================================================================
-# 6. GERAÇÃO DE RESULTADOS ESPACIAIS (SHAPEFILE E CÁLCULO DE ÁREA)
-# =====================================================================
-print("\nProcessando cruzamento espacial e gerando mapas...")
+    os.remove(temp_class_1band)
+    print(f"\n🎉 SCRIPT 07 CONCLUÍDO COM SUCESSO! Modelos treinados e mapas espaciais otimizados gerados.")
 
-# Prever a classe para TODO o dataset
-X_all_scaled = scaler.transform(X)
-y_pred_all = svm_model.predict(X_all_scaled)
-
-df_resultados = pd.DataFrame({col_id: ids_completo, 'Predicao': y_pred_all})
-
-# Carregar o Shapefile com os polígonos dos superpixels
-gdf_seg = gpd.read_file(SHP_SUPERPIXELS)
-
-# Buscar dinamicamente a coluna de ID dentro do Shapefile
-col_shp_id = next((c for c in possiveis_ids_final if c in gdf_seg.columns), None)
-if col_shp_id is None:
-    raise ValueError(f"Coluna de ID não encontrada no Shapefile. Colunas disponíveis: {list(gdf_seg.columns)}")
-
-print(f"Cruzando dados: CSV ({col_id}) <--> Shapefile ({col_shp_id})")
-
-# Fazer a junção (Merge)
-gdf_map = gdf_seg.merge(df_resultados, left_on=col_shp_id, right_on=col_id, how='left')
-gdf_map['Predicao'] = gdf_map['Predicao'].fillna(-1).astype(int)
-
-# Criar coluna textual para visualização fácil no QGIS
-condicoes = [gdf_map['Predicao'] == -1, gdf_map['Predicao'] == 0, gdf_map['Predicao'] == 1]
-escolhas = ['Não Analisada', 'Não-Floresta', 'Floresta']
-gdf_map['Classe'] = np.select(condicoes, escolhas, default='Erro')
-
-# Calcular a Área Projetada (UTM Zona 23S - EPSG:31983)
-gdf_calc = gdf_map.to_crs(epsg=31983)
-gdf_desmatamento = gdf_calc[gdf_calc['Predicao'] == 0]
-
-area_m2 = gdf_desmatamento.area.sum()
-area_px = int(area_m2 / 4) # 1 pixel CBERS Pan = 4m²
-houve_desmatamento = area_m2 > 0
-
-# Salvar Relatório em Texto
-texto_relatorio = f"""RELATÓRIO DE MONITORAMENTO - FORESTEYES
-=======================================
-Acurácia Balanceada (Teste): {b_acc:.4f}
-
-Relatório de Classificação (Conjunto de Teste):
-{relatorio_txt}
-
-DADOS DE DESMATAMENTO (Área Total Analisada):
-Houve desmatamento detectado? {'SIM' if houve_desmatamento else 'NÃO'}
-Área total de Não-Floresta (Desmatamento): {area_m2:,.2f} m²
-Quantidade equivalente em Pixels (CBERS 2m): {area_px:,} px
-=======================================
-"""
-with open(f'{OUT_DIR}/relatorio_resultados.txt', 'w', encoding='utf-8') as f:
-    f.write(texto_relatorio)
-print(texto_relatorio)
-
-# Salvar o Shapefile
-shp_out_path = f'{OUT_DIR}/resultado_classificacao_3549904.shp'
-gdf_map.to_file(shp_out_path)
-
-# Gerar Mapa em PNG
-fig_map, ax_map = plt.subplots(figsize=(10, 10))
-cmap_map = ListedColormap(['gray', 'red', 'green'])
-gdf_map.plot(column='Predicao', cmap=cmap_map, legend=False, ax=ax_map)
-plt.title('Mapa de Classificação: Cinza(Não Analisada), Verde(Floresta), Vermelho(Não-Floresta)')
-plt.axis('off')
-plt.savefig(f'{OUT_DIR}/mapa_classificacao_cores.png', dpi=300, bbox_inches='tight')
-plt.close()
-
-# =====================================================================
-# 7. GERAÇÃO DA IMAGEM TIF (MÁSCARA DE DESMATAMENTO)
-# =====================================================================
-if houve_desmatamento:
-    print("Gerando imagem TIF (True Color) focada nas áreas de desmatamento...")
-    with rasterio.open(TIF_ORIGINAL) as src:
-        # Obter geometrias do desmatamento na mesma projeção do Raster original
-        geometrias_desmatamento = gdf_map[gdf_map['Predicao'] == 0].to_crs(src.crs).geometry.tolist()
-        
-        # Realizar o recorte/máscara
-        out_image, out_transform = mask(src, geometrias_desmatamento, crop=False, filled=True, nodata=0)
-        out_meta = src.meta.copy()
-
-    out_meta.update({
-        "driver": "GTiff",
-        "height": out_image.shape[1],
-        "width": out_image.shape[2],
-        "transform": out_transform
-    })
-
-    tif_out_path = f'{OUT_DIR}/desmatamento_mascara_CBERS.tif'
-    with rasterio.open(tif_out_path, "w", **out_meta) as dest:
-        dest.write(out_image)
-        
-    print(f"TIF de desmatamento gerado com sucesso em: {tif_out_path}")
-else:
-    print("Nenhum desmatamento detectado. TIF de máscara ignorado.")
-
-print(f"\nPipeline concluído! Todos os arquivos estão em:\n{OUT_DIR}")
+if __name__ == "__main__":
+    main()
