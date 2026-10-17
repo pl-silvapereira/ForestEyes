@@ -25,12 +25,13 @@ from sklearn.metrics import (
 # =====================================================================
 BASE_DIR = '/content/drive/MyDrive/Mestrado/04-Projeto ForestEyes/ForestEyes/urban-deforestation-monitoring/workspace'
 
-# Entradas CSV (Características)
+# Entradas CSV (Características extraídas)
 PATH_FOREST = f'{BASE_DIR}/reports/dataframes_csv/forest/df_forest_sort_3549904_2024.csv'
 PATH_NON_FOREST = f'{BASE_DIR}/reports/dataframes_csv/non-forest/df_non-forest_sort_3549904_2024.csv'
 
-# Entradas Espaciais (Base para gerar os mapas)
-SHP_SEGMENTOS = f'{BASE_DIR}/data/output/segmentation/2024/3549904_Segmentar_vs_NaoSegmentar_2024.shp'
+# Entradas Espaciais (Base para cruzar as predições e gerar os mapas)
+# ATUALIZADO: Usando o shapefile correto que contém os polígonos dos superpixels
+SHP_SUPERPIXELS = f'{BASE_DIR}/data/output/classification/2024/3549904_Classificado_ForestEyes_2024.shp'
 TIF_ORIGINAL = f'{BASE_DIR}/data/output/pansharpening/2024/3549904_2024_CBERS_TRUE_COLOR_2M.tif'
 
 # Saídas (Onde os arquivos gerados serão salvos)
@@ -45,7 +46,7 @@ print(f"Diretório de saída garantido em: {OUT_DIR}")
 def preparar_dataframe(df_path, label_alvo):
     df = pd.read_csv(df_path)
     
-    # Listas de possíveis nomes para as colunas de ID e Banda (agora inclui Segment_label)
+    # Listas de possíveis nomes para as colunas de ID e Banda
     possiveis_ids = ['Segment_label', 'segment_label', 'Segment_ID', 'segment_id', 'id', 'ID', 'Segmento', 'segment']
     possiveis_bandas = ['Band', 'band', 'banda', 'Banda']
     
@@ -79,21 +80,19 @@ possiveis_ids_final = ['Segment_label', 'segment_label', 'Segment_ID', 'segment_
 col_id = next((col for col in possiveis_ids_final if col in df_completo.columns), None)
 
 if col_id is None:
-    print("\n[ERRO CRÍTICO] As colunas no seu CSV são:", list(df_completo.columns))
-    raise ValueError("Nenhuma coluna de identificação (ID) foi encontrada. Verifique as colunas acima.")
+    raise ValueError(f"Nenhuma coluna de ID encontrada no CSV. Colunas: {list(df_completo.columns)}")
 
-print(f"Coluna de ID detectada com sucesso: '{col_id}'")
+print(f"Coluna de ID detectada com sucesso no CSV: '{col_id}'")
 ids_completo = df_completo[col_id].values
 y = df_completo['Target'].values
 
-# Filtrar colunas indesejadas (incluindo Region caso seja texto)
+# Filtrar colunas indesejadas
 cols_to_drop = ['Target', col_id, 'Class', 'classe', 'Label', 'Region']
 df_features = df_completo.drop(columns=[c for c in cols_to_drop if c in df_completo.columns], errors='ignore')
 df_features_numericas = df_features.select_dtypes(include=[np.number])
 X = df_features_numericas.values
 
 print(f"Amostras: {len(X)} | Features numéricas processadas: {X.shape[1]}")
-print(f"Features utilizadas: {list(df_features_numericas.columns)}")
 
 # =====================================================================
 # 4. TREINAMENTO DO MODELO SVM
@@ -116,7 +115,6 @@ b_acc = balanced_accuracy_score(y_test, y_pred)
 class_names = ['Não-Floresta (0)', 'Floresta (1)']
 relatorio_txt = classification_report(y_test, y_pred, target_names=class_names)
 
-# Salvar Matriz de Confusão
 cm = confusion_matrix(y_test, y_pred)
 disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
 fig_cm, ax_cm = plt.subplots(figsize=(6, 6))
@@ -134,29 +132,28 @@ print("\nProcessando cruzamento espacial e gerando mapas...")
 X_all_scaled = scaler.transform(X)
 y_pred_all = svm_model.predict(X_all_scaled)
 
-# DataFrame com o resultado previsto
 df_resultados = pd.DataFrame({col_id: ids_completo, 'Predicao': y_pred_all})
 
-# Carregar o Shapefile original
-gdf_seg = gpd.read_file(SHP_SEGMENTOS)
+# Carregar o Shapefile com os polígonos dos superpixels
+gdf_seg = gpd.read_file(SHP_SUPERPIXELS)
 
-# Buscar dinamicamente a coluna de ID dentro do Shapefile (pode ter nome diferente do CSV)
+# Buscar dinamicamente a coluna de ID dentro do Shapefile
 col_shp_id = next((c for c in possiveis_ids_final if c in gdf_seg.columns), None)
 if col_shp_id is None:
     raise ValueError(f"Coluna de ID não encontrada no Shapefile. Colunas disponíveis: {list(gdf_seg.columns)}")
 
-print(f"Cruzando dados: CSV({col_id}) <--> Shapefile({col_shp_id})")
+print(f"Cruzando dados: CSV ({col_id}) <--> Shapefile ({col_shp_id})")
 
 # Fazer a junção (Merge)
 gdf_map = gdf_seg.merge(df_resultados, left_on=col_shp_id, right_on=col_id, how='left')
 gdf_map['Predicao'] = gdf_map['Predicao'].fillna(-1).astype(int)
 
-# Criar coluna textual
+# Criar coluna textual para visualização fácil no QGIS
 condicoes = [gdf_map['Predicao'] == -1, gdf_map['Predicao'] == 0, gdf_map['Predicao'] == 1]
 escolhas = ['Não Analisada', 'Não-Floresta', 'Floresta']
 gdf_map['Classe'] = np.select(condicoes, escolhas, default='Erro')
 
-# Calcular a Área Projetada (UTM)
+# Calcular a Área Projetada (UTM Zona 23S - EPSG:31983)
 gdf_calc = gdf_map.to_crs(epsg=31983)
 gdf_desmatamento = gdf_calc[gdf_calc['Predicao'] == 0]
 
@@ -201,7 +198,10 @@ plt.close()
 if houve_desmatamento:
     print("Gerando imagem TIF (True Color) focada nas áreas de desmatamento...")
     with rasterio.open(TIF_ORIGINAL) as src:
+        # Obter geometrias do desmatamento na mesma projeção do Raster original
         geometrias_desmatamento = gdf_map[gdf_map['Predicao'] == 0].to_crs(src.crs).geometry.tolist()
+        
+        # Realizar o recorte/máscara
         out_image, out_transform = mask(src, geometrias_desmatamento, crop=False, filled=True, nodata=0)
         out_meta = src.meta.copy()
 
