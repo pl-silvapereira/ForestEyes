@@ -12,7 +12,6 @@ import rasterio.warp
 from rasterio.features import rasterize
 from skimage.segmentation import slic, find_boundaries
 from skimage.measure import regionprops_table
-import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 
 def main():
@@ -54,7 +53,7 @@ def main():
     if not mb_files:
         print(f"[ERRO CRÍTICO] Imagem MapBiomas não encontrada no diretório: {mb_dir}", flush=True)
         sys.exit(1)
-    
+        
     path_mapbiomas = mb_files[0]
     CLASSES_FLORESTA_MAPBIOMAS = [1, 3, 4, 5, 9, 49]
 
@@ -70,8 +69,8 @@ def main():
 
     # Limiares e Variáveis
     min_Hor = 0.7
-    min_size_seg_threshold = 100 # 100 pixels = 400 m² (limiar de descarte de ruído)
-    qps = 250.0 # Média de ~250 pixels por segmento
+    min_size_seg_threshold = 100  # 100 pixels = 400 m² (limiar de descarte de ruído)
+    qps = 250.0  # Média de ~250 pixels por segmento
     
     min_r, max_r = 56, 1342
     min_g, max_g = 74, 1050
@@ -107,7 +106,7 @@ def main():
 
     with rasterio.open(path_cbers) as src, rasterio.open(path_mapbiomas) as src_mb, \
          rasterio.open(temp_tif_slic, 'w', **cbers_meta) as dst, rasterio.open(temp_tif_ids, 'w', **meta_ids) as dst_ids:
-        
+         
         dst.set_band_description(1, "Red")
         dst.set_band_description(2, "Green")
         dst.set_band_description(3, "Blue")
@@ -209,6 +208,8 @@ def main():
     auditoria_str = f"x{code_muni}: total_segs = {total_segs} | good_segs = {good_segs} | bad_segs = {bad_segs} | bad_segs because of HoR = {bad_by_hor} | bad_segs because of size = {bad_by_size} | perfect_segs = {n_perfect_segs} ({perc_perfect:.2f}%)"
 
     df_good = df_all[good_mask].copy()
+    
+    # ATUALIZAÇÃO CHAVE: Cria a métrica física de metros quadrados, mas também preserva o 'Size' em pixels
     df_good['Size_m2'] = df_good['Size'] * 4.0
 
     def categoria_hor_exata(h):
@@ -255,6 +256,7 @@ def main():
     df_forest = df_good[df_good['Class'] == 'floresta'].sort_values(by='HoR', ascending=False)
     df_non_forest = df_good[df_good['Class'] == 'nao floresta'].sort_values(by='HoR', ascending=False)
     
+    # GARANTIA DE COMPATIBILIDADE: Exportamos tanto Size quanto Size_m2
     colunas_finais = ['Segment_label', 'HoR', 'Class', 'Size', 'Size_m2', 'Region', 'Mean_R', 'Mean_G', 'Mean_B']
     if num_bands >= 4: colunas_finais.append('Mean_NIR')
 
