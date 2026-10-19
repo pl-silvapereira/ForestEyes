@@ -9,7 +9,8 @@ from rasterio.features import shapes
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import LinearSVC
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 
 def main():
@@ -32,11 +33,13 @@ def main():
     output_seg_dir = os.path.join(project_root, "data", "output", "segmentation", ano_fim)
     output_class_dir = os.path.join(project_root, "data", "output", "classification", ano_fim)
     output_report_dir = os.path.join(project_root, "reports")
+    dir_matriz_confusao = os.path.join(project_root, "data", "output", "matriz_de_confusao", ano_fim)
     dir_forest = os.path.join(output_report_dir, "dataframes_csv", "forest")
     dir_non_forest = os.path.join(output_report_dir, "dataframes_csv", "non-forest")
     
     os.makedirs(output_class_dir, exist_ok=True)
     os.makedirs(output_report_dir, exist_ok=True)
+    os.makedirs(dir_matriz_confusao, exist_ok=True)
 
     # Ficheiros de Entrada
     path_cbers = os.path.join(project_root, "data", "output", "pansharpening", ano_fim, f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif")
@@ -98,7 +101,7 @@ def main():
     print(f" -> Conjunto de Treino: {len(id_train)} superpixels metodológicos (Balanceados)")
     print(f" -> Conjunto de Predição: {len(id_test):,} superpixels")
 
-    # 2. Treino de Machine Learning
+    # 2. Treino de Machine Learning e Matriz de Confusão
     print("\n2. A iniciar o Treinamento de Inteligência Artificial...", flush=True)
     
     rf = RandomForestClassifier(n_estimators=50, random_state=42, n_jobs=-1)
@@ -112,6 +115,17 @@ def main():
     svm_pred = svm.predict(X_test)
     svm_acc = accuracy_score(y_test, svm_pred)
     print(f" ✔️ Acurácia SVM: {svm_acc * 100:.2f}%")
+
+    print(" -> Gerando e salvando Matriz de Confusão (Random Forest)...", flush=True)
+    cm = confusion_matrix(y_test, rf_pred)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["Não Floresta (0)", "Floresta (1)"])
+    fig, ax = plt.subplots(figsize=(8, 6))
+    disp.plot(cmap=plt.cm.Blues, ax=ax, values_format='d')
+    plt.title(f"Matriz de Confusão RF - Módulo OBIA - {ano_fim}")
+    
+    path_matriz = os.path.join(dir_matriz_confusao, f"{code_muni}_Matriz_Confusao_RF_{ano_fim}.png")
+    plt.savefig(path_matriz, dpi=300, bbox_inches='tight')
+    plt.close()
 
     # Mapeamento Rápido Numpy (Utilizando RF)
     max_id = df_all['Segment_label'].max()
@@ -150,19 +164,17 @@ def main():
                 window = Window(x_idx, y_idx, w_janela, h_janela)
                 
                 bloco_ids = src_ids.read(1, window=window)
-                # Filtra valores fora do limite para evitar erros no Numpy
                 bloco_ids_validos = np.clip(bloco_ids, 0, max_id)
                 bloco_classes = mapa_cores_ids[bloco_ids_validos]
-                # Preserva o nodata original
                 bloco_classes[bloco_ids == 0] = 0
                 
                 r = np.zeros_like(bloco_classes, dtype=np.uint8)
                 g = np.zeros_like(bloco_classes, dtype=np.uint8)
                 b = np.zeros_like(bloco_classes, dtype=np.uint8)
                 
-                r[bloco_classes == 1], g[bloco_classes == 1], b[bloco_classes == 1] = 0, 255, 0    # Verde
-                r[bloco_classes == 2], g[bloco_classes == 2], b[bloco_classes == 2] = 255, 0, 0    # Vermelho
-                r[bloco_classes == 3], g[bloco_classes == 3], b[bloco_classes == 3] = 255, 255, 0  # Amarelo
+                r[bloco_classes == 1], g[bloco_classes == 1], b[bloco_classes == 1] = 0, 255, 0    
+                r[bloco_classes == 2], g[bloco_classes == 2], b[bloco_classes == 2] = 255, 0, 0    
+                r[bloco_classes == 3], g[bloco_classes == 3], b[bloco_classes == 3] = 255, 255, 0  
                 
                 dst_rgb.write(r, 1, window=window)
                 dst_rgb.write(g, 2, window=window)
@@ -181,7 +193,6 @@ def main():
         )
         gdf_final = gpd.GeoDataFrame.from_features(list(results), crs=cbers_crs)
 
-    # Mapeamento exato para o estilo QML (1=Floresta, 2=Não Floresta, 3=Treino)
     dict_classes = {1: 'Ainda Floresta', 2: 'Nao eh mais Floresta', 3: 'Treino/Referencia'}
     gdf_final['Classe'] = gdf_final['Classe_ID'].map(dict_classes)
     gdf_final = gdf_final.dissolve(by='Classe').reset_index()
@@ -199,8 +210,8 @@ def main():
       <symbol type="fill" name="0" clip_to_extent="1" force_rhr="0">
         <layer pass="0" class="SimpleFill" locked="0">
           <prop k="border_width_map_unit_scale" v="3x:0,0,0,0,0,0"/>
-          <prop k="color" v="255,255,0,0"/> <!-- Fundo Transparente -->
-          <prop k="outline_color" v="255,255,0,255"/> <!-- Borda Amarela -->
+          <prop k="color" v="255,255,0,0"/> 
+          <prop k="outline_color" v="255,255,0,255"/> 
           <prop k="outline_style" v="solid"/>
           <prop k="outline_width" v="0.5"/>
         </layer>
@@ -208,8 +219,8 @@ def main():
       <symbol type="fill" name="1" clip_to_extent="1" force_rhr="0">
         <layer pass="0" class="SimpleFill" locked="0">
           <prop k="border_width_map_unit_scale" v="3x:0,0,0,0,0,0"/>
-          <prop k="color" v="255,0,0,0"/> <!-- Fundo Transparente -->
-          <prop k="outline_color" v="255,0,0,255"/> <!-- Borda Vermelha -->
+          <prop k="color" v="255,0,0,0"/> 
+          <prop k="outline_color" v="255,0,0,255"/> 
           <prop k="outline_style" v="solid"/>
           <prop k="outline_width" v="0.5"/>
         </layer>
@@ -247,7 +258,6 @@ def main():
                 rgb_raw = src_rgb.read(window=window)
                 bloco_class = src_1b.read(1, window=window)
                 
-                # Zera tudo o que NÃO for desmatamento (classe 2)
                 mask_apagar = (bloco_class != 2)
                 for band_idx in range(rgb_raw.shape[0]):
                     rgb_raw[band_idx][mask_apagar] = 0
@@ -257,7 +267,6 @@ def main():
     # 6. Relatório Final
     print("\n6. A calcular áreas e gerar o Relatório Textual...", flush=True)
     
-    # Cálculo em Hectares utilizando Size_m2 da base original para manter precisão geométrica da segmentação MaskSLIC
     df_test_final = df_all.loc[df_all['Segment_label'].isin(id_test)]
     area_total_ha = df_test_final['Size'].sum() * 4.0 / 10000.0
     area_mantida_ha = df_test_final.loc[rf_pred == 1, 'Size'].sum() * 4.0 / 10000.0
@@ -279,7 +288,7 @@ def main():
         f.write("=========================================================\n")
 
     os.remove(temp_class_1band)
-    print(f"\n🎉 SCRIPT 07 CONCLUÍDO COM SUCESSO! Modelos treinados e mapas espaciais otimizados gerados.")
+    print(f"\n🎉 SCRIPT 07 CONCLUÍDO COM SUCESSO! Modelos treinados, Matriz de Confusão salva em: {path_matriz}")
 
 if __name__ == "__main__":
     main()
