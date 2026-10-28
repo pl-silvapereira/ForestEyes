@@ -87,7 +87,7 @@ def baixar_mapbiomas(code_muni, ano, limite_geopolitico, nome_cidade, uf, projet
             raise Exception(f"Exportação MapBiomas {ano} falhou. Status: {state}. Erro: {status.get('error_message')}")
         time.sleep(20)
 
-    raiz_drive = os.path.abspath(os.path.join(projeto_root, "../="../../../../.."))
+    raiz_drive = os.path.abspath(os.path.join(projeto_root, "../../../../../"))
     caminho_temp_local = os.path.join(raiz_drive, pasta_temporaria)
     arquivo_origem = os.path.join(caminho_temp_local, nome_arquivo_mapbiomas)
     
