@@ -1,5 +1,11 @@
 import os
 import sys
+import duckdb
+
+# Correção de compatibilidade entre DuckDB e geobr no Python 3.13
+if not hasattr(duckdb.DuckDBPyRelation, "fetchone"):
+    duckdb.DuckDBPyRelation.fetchone = lambda self: self.fetchall()[0]
+
 import geopandas as gpd
 import pandas as pd
 import geobr
@@ -8,7 +14,7 @@ from dotenv import load_dotenv
 def main():
     if len(sys.argv) < 4:
         print("❌ Erro: Parâmetros insuficientes.")
-        print("Uso correto: python 04-analisarDiferencasTemporais.py   ")
+        print("Uso correto: python 04-analisarDiferencasTemporais.py <code_muni> <ano_inicio> <ano_fim>")
         print("Exemplo: python 04-analisarDiferencasTemporais.py 3549904 2020 2024")
         sys.exit(1)
 

@@ -1,5 +1,11 @@
 import sys
 import os
+import duckdb
+
+# Correção de compatibilidade entre DuckDB e geobr no Python 3.13
+if not hasattr(duckdb.DuckDBPyRelation, "fetchone"):
+    duckdb.DuckDBPyRelation.fetchone = lambda self: self.fetchall()[0]
+
 import geopandas as gpd
 import pandas as pd
 from shapely.ops import unary_union
@@ -8,13 +14,12 @@ from dotenv import load_dotenv
 import base64
 
 def gerar_estilo_qml_garantido(caminho_qml):
-    # O QML inteiro está protegido em Base64 para EVITAR que a tela do chat apague as tags 
     qml_b64 = (
         "PCFET0NUWVBFIHFnaXMgUFVCTElDICdodHRwOi8vbXJjYy5jb20vcWdpcy5kdGQnICdTWVNURU0n"
         "Pg0KPHFnaXMgc3R5bGVDYXRlZ29yaWVzPSJBbGxTdHlsZUNhdGVnb3JpZXMiIHZlcnNpb249IjMu"
         "MjguMCI+DQogIDxyZW5kZXJlci12MiBhdHRyPSJjbGFzc19uYW1lIiB0eXBlPSJjYXRlZ29yaXpl"
         "ZFN5bWJvbCI+DQogICAgPGNhdGVnb3JpZXM+DQogICAgICA8Y2F0ZWdvcnkgcmVuZGVyPSJ0cnVl"
-        "IiBzeW1ib2w9IjAiIHZhbHVlPSJTZWdtZW50YXIiIGxhYmVsPSJTZWdtZW50YXIgKFZlcmRlKSIv"
+        "IiBzeW1ib2w9IjAiIHZhbHVlPSJTZWdtZW50YXIgS2VsYmVsPSJTZWdtZW50YXIgKFZlcmRlKSIv"
         "Pg0KICAgICAgPGNhdGVnb3J5IHJlbmRlcj0idHJ1ZSIgc3ltYm9sPSIxIiB2YWx1ZT0iTmFvX1Nl"
         "Z21lbnRhciIgbGFiZWw9Ik5hbyBTZWdtZW50YXIgKEFtYXJlbG8pIi8+DQogICAgPC9jYXRlZ29y"
         "aWVzPg0KICAgIDxzeW1ib2xzPg0KICAgICAgPHN5bWJvbCBhbHBoYT0iMSIgdHlwZT0iZmlsbCIg"
@@ -93,7 +98,7 @@ def main():
     print("3. Obtendo contorno geopolítico via geobr...")
     gdf_muni = geobr.read_municipality(code_muni=int(code_muni), year=2022)
     gdf_muni = gdf_muni.to_crs(gdf_seg_total.crs)
-    limite = gdf_muni.geometry.union_all()  # Corrigido o erro de DeprecationWarning
+    limite = gdf_muni.geometry.union_all()
 
     print("4. Processando áreas...")
     geom_seg = unary_union(gdf_seg_total.geometry.buffer(0))
@@ -117,7 +122,6 @@ def main():
     print("6. Gerando arquivo de estilo QML...")
     gerar_estilo_qml_garantido(path_qml)
 
-    # Validando o tamanho que não sofrerá mais a quebra na cópia
     tamanho_qml = os.path.getsize(path_qml)
     print(f"\n✅ SUCESSO! Arquivo QML gravado corretamente (Tamanho exato: {tamanho_qml} bytes).")
     print(f"✅ Shapefile pronto em: {path_shp}")
