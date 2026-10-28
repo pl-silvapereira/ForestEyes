@@ -2,6 +2,7 @@ import sys
 import os
 import gc
 import shutil
+import warnings
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -12,6 +13,10 @@ from skimage.segmentation import slic, find_boundaries
 from skimage.measure import regionprops_table
 import matplotlib.pyplot as plt
 from dotenv import load_dotenv
+
+# Silenciar avisos inofensivos do SciPy/scikit-image durante a convergência do SLIC em tiles
+warnings.filterwarnings("ignore", message=".*One of the clusters is empty.*")
+warnings.filterwarnings("ignore", category=UserWarning, module="scipy")
 
 def main():
     if len(sys.argv) < 4:
@@ -47,7 +52,7 @@ def main():
     print(f"📄 SCRIPT 06 - EXTRAÇÃO OBIA E SUPERPIXELS ({ano_fim})", flush=True)
     print("=" * 80, flush=True)
 
-    # 1. VALORES EXATOS EXTRAÍDOS DO XML FORNECIDO
+    # VALORES EXATOS EXTRAÍDOS DO XML
     min_r, max_r = 56, 1342
     min_g, max_g = 74, 1050
     min_b, max_b = 101, 1267
@@ -110,7 +115,7 @@ def main():
                 qtp_muni_tile = np.sum(mask_muni_tile)
                 
                 rgbnir_raw = src.read(window=window) 
-                
+
                 if qtp_muni_tile > 0:
                     qts_tile = int(qtp_muni_tile / qps)
                     if qts_tile > 0:
@@ -119,7 +124,7 @@ def main():
                         rgb_slic = rgbnir_ch_last[:, :, :3].astype(np.float32)
                         tile_max = rgb_slic.max()
                         if tile_max > 0: rgb_slic /= tile_max 
-                            
+
                         segmentos_tile = slic(rgb_slic, n_segments=qts_tile, compactness=10, mask=(mask_muni_tile == 1), start_label=1, max_num_iter=5)
                         
                         if np.any(segmentos_tile > 0):
@@ -142,20 +147,20 @@ def main():
                             })
                             if num_bands >= 4:
                                 df_tile['Mean_NIR'] = props['intensity_mean-3']
-                                
+                            
                             df_list.append(df_tile)
                             global_seg_offset = df_tile['ID_Segmento'].max()
 
-                        # Usa os valores máximos reais extraídos do XML para a borda branca 
-                        contornos_tile = find_boundaries(segmentos_tile, mode='inner')
-                        rgbnir_raw[0][contornos_tile] = max_r
-                        rgbnir_raw[1][contornos_tile] = max_g
-                        rgbnir_raw[2][contornos_tile] = max_b
-                        
-                        print(f"   ✅ [Bloco {bloco_atual}/{total_blocos}] -> Extraídos IDs e atributos.", flush=True)
-                else:
-                    if bloco_atual % 20 == 0:
-                        print(f"   ⏩ [Bloco {bloco_atual}/{total_blocos}] -> Ignorando áreas vazias...", flush=True)
+                            # Borda branca baseada nos limites do XML
+                            contornos_tile = find_boundaries(segmentos_tile, mode='inner')
+                            rgbnir_raw[0][contornos_tile] = max_r
+                            rgbnir_raw[1][contornos_tile] = max_g
+                            rgbnir_raw[2][contornos_tile] = max_b
+                            
+                            print(f"  ✅ [Bloco {bloco_atual}/{total_blocos}] -> Extraídos IDs e atributos.", flush=True)
+                        else:
+                            if bloco_atual % 20 == 0:
+                                print(f"  ⏩ [Bloco {bloco_atual}/{total_blocos}] -> Ignorando áreas vazias...", flush=True)
 
                 dst.write(rgbnir_raw, window=window)
                 del rgbnir_raw, mask_muni_tile
@@ -176,7 +181,7 @@ def main():
         if hor >= 99.9: return 'Perfeitos'
         elif hor >= 70.0: return 'Uteis'
         else: return 'Nao Uteis'
-        
+    
     df_all['Grupo'] = df_all['HoR_perc'].apply(classificar_grupo)
     
     # Exporta CSV
