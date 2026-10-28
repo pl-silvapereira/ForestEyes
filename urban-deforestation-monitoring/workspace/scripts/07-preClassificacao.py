@@ -60,43 +60,21 @@ def main():
     # 1 = Floresta Real, 0 = Não Floresta Real
     df_f['Classe_Real'] = 1
     df_nf['Classe_Real'] = 0
-
-    # Metodologia ForestEyes: Amostragem Fixa Balanceada (50 Perfeitos, 50 Úteis por Classe)
-    def amostrar_segmentos(df, n_perf=50, n_util=50):
-        df_perf = df[df['HoR'] == 1.0]
-        df_util = df[(df['HoR'] >= 0.7) & (df['HoR'] < 1.0)]
-        
-        # O min() evita erros caso haja menos de 50 segmentos úteis em alguma classe
-        amostra_perf = df_perf.sample(n=min(n_perf, len(df_perf)), random_state=42)
-        amostra_util = df_util.sample(n=min(n_util, len(df_util)), random_state=42)
-        
-        return pd.concat([amostra_perf, amostra_util])
-
-    df_train_f = amostrar_segmentos(df_f)
-    df_train_nf = amostrar_segmentos(df_nf)
-    
-    # Conjunto de Treinamento e Base Total
-    df_train = pd.concat([df_train_f, df_train_nf], ignore_index=True)
     df_all = pd.concat([df_f, df_nf], ignore_index=True)
-    
-    # Conjunto de Teste/Predição (Tudo que não foi sorteado para treino)
-    train_ids = df_train['Segment_label'].values
-    df_test = df_all[~df_all['Segment_label'].isin(train_ids)].copy()
 
-    # Selecionar apenas features numéricas
+    # Selecionar apenas features numéricas disponíveis (Mean RGB/NIR, Size, HoR)
     features_cols = df_all.select_dtypes(include=[np.number]).columns.tolist()
-    features_cols = [c for c in features_cols if c not in ['Segment_label', 'Classe_Real', 'HoR', 'Size', 'Size_m2']]
+    features_cols = [c for c in features_cols if c not in ['Segment_label', 'Classe_Real']]
     
-    X_train = df_train[features_cols]
-    y_train = df_train['Classe_Real']
-    id_train = df_train['Segment_label']
-    
-    X_test = df_test[features_cols]
-    y_test = df_test['Classe_Real']
-    id_test = df_test['Segment_label']
+    X = df_all[features_cols]
+    y = df_all['Classe_Real']
+    ids = df_all['Segment_label']
 
-    print(f" -> Conjunto de Treino: {len(id_train)} superpixels metodológicos (Balanceados)")
-    print(f" -> Conjunto de Predição: {len(id_test):,} superpixels")
+    # Regra: 30% Treino, 70% Predição
+    X_train, X_test, y_train, y_test, id_train, id_test = train_test_split(X, y, ids, test_size=0.70, random_state=42, stratify=y)
+    
+    print(f" -> Conjunto de Treino (Amarelo/Referência): {len(id_train):,} superpixels (30%)")
+    print(f" -> Conjunto de Predição (Verde/Vermelho): {len(id_test):,} superpixels (70%)")
 
     # 2. Treino de Machine Learning
     print("\n2. A iniciar o Treinamento de Inteligência Artificial...", flush=True)
@@ -121,7 +99,7 @@ def main():
     # 0 = Fundo, 1 = Floresta (Verde), 2 = Não Floresta (Vermelho), 3 = Treino (Amarelo)
     mapa_cores_ids[id_test[rf_pred == 1].values] = 1  # Floresta
     mapa_cores_ids[id_test[rf_pred == 0].values] = 2  # Desmatamento
-    mapa_cores_ids[id_train.values] = 3  # Treino
+    mapa_cores_ids[id_train.values] = 3               # Treino
 
     # 3. Geração Espacial Otimizada (Raster)
     print("\n3. A gerar o Mapa Raster Espacial bloco a bloco...", flush=True)
@@ -143,7 +121,7 @@ def main():
     with rasterio.open(path_ids_tif) as src_ids, \
          rasterio.open(path_tif_class, 'w', **meta_class) as dst_rgb, \
          rasterio.open(temp_class_1band, 'w', **meta_1band) as dst_1b:
-        
+         
         for y_idx in range(0, h, tile_size):
             for x_idx in range(0, w, tile_size):
                 w_janela, h_janela = min(tile_size, w - x_idx), min(tile_size, h - y_idx)
@@ -160,9 +138,9 @@ def main():
                 g = np.zeros_like(bloco_classes, dtype=np.uint8)
                 b = np.zeros_like(bloco_classes, dtype=np.uint8)
                 
-                r[bloco_classes == 1], g[bloco_classes == 1], b[bloco_classes == 1] = 0, 255, 0    # Verde
-                r[bloco_classes == 2], g[bloco_classes == 2], b[bloco_classes == 2] = 255, 0, 0    # Vermelho
-                r[bloco_classes == 3], g[bloco_classes == 3], b[bloco_classes == 3] = 255, 255, 0  # Amarelo
+                r[bloco_classes == 1], g[bloco_classes == 1], b[bloco_classes == 1] = 0, 255, 0       # Verde
+                r[bloco_classes == 2], g[bloco_classes == 2], b[bloco_classes == 2] = 255, 0, 0       # Vermelho
+                r[bloco_classes == 3], g[bloco_classes == 3], b[bloco_classes == 3] = 255, 255, 0     # Amarelo
                 
                 dst_rgb.write(r, 1, window=window)
                 dst_rgb.write(g, 2, window=window)
@@ -230,7 +208,7 @@ def main():
     path_qml = path_shp_final.replace(".shp", ".qml")
     with open(path_qml, "w") as f:
         f.write(qml_content)
-        
+    
     # 5. Gerar Imagem TIF do Desmatamento (Isolada)
     print("\n5. A gerar a máscara TIF isolando as áreas de desmatamento...", flush=True)
     path_tif_desmatamento = os.path.join(output_class_dir, f"{code_muni}_Mascara_Desmatamento_CBERS_{ano_fim}.tif")
@@ -257,23 +235,23 @@ def main():
     # 6. Relatório Final
     print("\n6. A calcular áreas e gerar o Relatório Textual...", flush=True)
     
-    # Cálculo em Hectares utilizando Size_m2 da base original para manter precisão geométrica da segmentação MaskSLIC
-    df_test_final = df_all.loc[df_all['Segment_label'].isin(id_test)]
-    area_total_ha = df_test_final['Size'].sum() * 4.0 / 10000.0
-    area_mantida_ha = df_test_final.loc[rf_pred == 1, 'Size'].sum() * 4.0 / 10000.0
-    area_nao_floresta_ha = df_test_final.loc[rf_pred == 0, 'Size'].sum() * 4.0 / 10000.0
+    # Cálculo em Hectares utilizando Size_m2
+    df_test = df_all.loc[df_all['Segment_label'].isin(id_test)]
+    area_total_ha = df_test['Size_m2'].sum() / 10000.0
+    area_mantida_ha = df_test.loc[rf_pred == 1, 'Size_m2'].sum() / 10000.0
+    area_nao_floresta_ha = df_test.loc[rf_pred == 0, 'Size_m2'].sum() / 10000.0
     
     path_txt_relatorio = os.path.join(output_report_dir, f"{code_muni}_Relatorio_IA_Desmatamento_{ano_fim}.txt")
     with open(path_txt_relatorio, 'w', encoding='utf-8') as f:
         f.write("=========================================================\n")
         f.write(f" RELATÓRIO DE INTELIGÊNCIA ARTIFICIAL OBIA - {ano_fim}\n")
         f.write("=========================================================\n")
-        f.write(f"Algoritmos de Aprendizado de Máquina (Amostragem Fixa Balanceada Metodológica)\n\n")
-        f.write("1. PERFORMANCE DOS MODELOS (Validação contra o Conjunto de Predição):\n")
+        f.write(f"Algoritmos de Aprendizado de Máquina (70% Teste / 30% Treino)\n\n")
+        f.write("1. PERFORMANCE DOS MODELOS:\n")
         f.write(f"  - Random Forest (Acurácia Global): {rf_acc * 100:.2f}%\n")
         f.write(f"  - Support Vector Machine (Acurácia Global): {svm_acc * 100:.2f}%\n\n")
         f.write("2. RESULTADOS DO DESMATAMENTO (Baseado no Conjunto de Predição):\n")
-        f.write(f"  - Área Analisada (Predição): {area_total_ha:,.2f} hectares\n")
+        f.write(f"  - Área Analisada (70%): {area_total_ha:,.2f} hectares\n")
         f.write(f"  - Área que AINDA É FLORESTA: {area_mantida_ha:,.2f} hectares\n")
         f.write(f"  - ÁREA NÃO FLORESTA (Possível Desmatamento): {area_nao_floresta_ha:,.2f} hectares\n")
         f.write("=========================================================\n")
