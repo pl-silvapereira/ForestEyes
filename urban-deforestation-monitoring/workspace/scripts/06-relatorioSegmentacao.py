@@ -66,13 +66,11 @@ def main():
     relatorio_tabela_csv = os.path.join(output_report_dir, f"{code_muni}_Relatorio_Tabela_Detalhada_{ano_fim}.csv")
 
     print("=" * 80, flush=True)
-    print(f"📄 SCRIPT 06 - OBIA URBANO (CBERS 2M - ESCALA ~1000m²) - {ano_fim}", flush=True)
+    print(f"📄 SCRIPT 06 - RELATÓRIO MATRICIAL OBIA (CRITÉRIO HoR AJUSTADO) - {ano_fim}", flush=True)
     print("=" * 80, flush=True)
 
-    # AJUSTE METODOLÓGICO SUGERIDO PELO PROFESSOR ALVARO:
     min_Hor = 0.7
-    min_size_seg_threshold = 100  # 100 pixels = 400 m² (limiar de descarte de ruído)
-    qps = 250.0                   # Média de ~250 pixels por segmento (~1000 m²) para CBERS 2m
+    min_size_seg_threshold = 630
     
     min_r, max_r = 56, 1342
     min_g, max_g = 74, 1050
@@ -89,6 +87,8 @@ def main():
     geom_seg = gdf_muni[gdf_muni['class_name'] == 'Segmentar'].geometry
     mask_seg = rasterize([(geom, 1) for geom in geom_seg], out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8)
     
+    qps = 1500.0 
+
     temp_tif_slic = f"/content/temp_slic_{code_muni}_{ano_fim}.tif"
     temp_tif_ids = f"/content/temp_ids_{code_muni}_{ano_fim}.tif"
     
@@ -213,6 +213,7 @@ def main():
     df_good = df_all[good_mask].copy()
     df_good['Size_m2'] = df_good['Size'] * 4.0
 
+    # Aplicação estricta da regra do HoR informada
     def categoria_hor_exata(h):
         if h >= 0.9999: 
             return 'Perfeito'
@@ -272,7 +273,7 @@ def main():
         f.write("=========================================================================================\n")
         f.write(f"Município: {code_muni} | Gabarito: MapBiomas 10m\n")
         f.write(f"Critério HoR: Perfeito (=100%) | Útil (<100% e >70%) | Não Útil (<=70%)\n")
-        f.write(f"Filtros: min_size = {min_size_seg_threshold} px ({min_size_seg_threshold*4} m2) | qps = {qps}\n\n")
+        f.write(f"Filtros: min_size = {min_size_seg_threshold} px ({min_size_seg_threshold*4} m2)\n\n")
         f.write(auditoria_str + "\n\n")
         f.write("TABELA RESUMO DE SEGMENTOS (MÉTRICAS POR CLASSE):\n")
         f.write("-" * 105 + "\n")
