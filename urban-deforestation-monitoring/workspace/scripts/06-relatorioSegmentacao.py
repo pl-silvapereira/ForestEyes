@@ -34,6 +34,7 @@ def main():
     # Diretórios
     output_seg_dir = os.path.join(project_root, "data", "output", "segmentation", ano_fim)
     output_report_dir = os.path.join(project_root, "reports")
+    
     dir_forest = os.path.join(output_report_dir, "dataframes_csv", "forest")
     dir_non_forest = os.path.join(output_report_dir, "dataframes_csv", "non-forest")
     
@@ -54,7 +55,7 @@ def main():
     if not mb_files:
         print(f"[ERRO CRÍTICO] Imagem MapBiomas não encontrada no diretório: {mb_dir}", flush=True)
         sys.exit(1)
-    
+        
     path_mapbiomas = mb_files[0]
     CLASSES_FLORESTA_MAPBIOMAS = [1, 3, 4, 5, 9, 49]
 
@@ -68,10 +69,10 @@ def main():
     print(f"📄 SCRIPT 06 - OBIA URBANO (CBERS 2M - ESCALA ~1000m²) - {ano_fim}", flush=True)
     print("=" * 80, flush=True)
 
-    # Limiares e Variáveis
+    # AJUSTE METODOLÓGICO SUGERIDO PELO PROFESSOR ALVARO:
     min_Hor = 0.7
-    min_size_seg_threshold = 100 # 100 pixels = 400 m² (limiar de descarte de ruído)
-    qps = 250.0 # Média de ~250 pixels por segmento
+    min_size_seg_threshold = 100  # 100 pixels = 400 m² (limiar de descarte de ruído)
+    qps = 250.0                   # Média de ~250 pixels por segmento (~1000 m²) para CBERS 2m
     
     min_r, max_r = 56, 1342
     min_g, max_g = 74, 1050
@@ -93,7 +94,7 @@ def main():
     
     path_tif_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_ContornosBrancos_{ano_fim}.tif")
     path_tif_ids = os.path.join(output_seg_dir, f"{code_muni}_IDs_Superpixels_{ano_fim}.tif") 
-
+    
     meta_ids = cbers_meta.copy()
     meta_ids.update(dtype=rasterio.uint32, count=1, nodata=0)
 
@@ -169,6 +170,7 @@ def main():
                                 df_tile['Mean_NIR'] = props['intensity_mean-3']
                                 
                             df_tile['Region'] = f"x{code_muni}"
+                            
                             df_tile['HoR'] = np.where(df_tile['Prop_Floresta'] >= 0.5, df_tile['Prop_Floresta'], 1.0 - df_tile['Prop_Floresta'])
                             df_tile['Class'] = np.where(df_tile['Prop_Floresta'] >= 0.5, 'floresta', 'nao floresta')
                             
@@ -212,9 +214,12 @@ def main():
     df_good['Size_m2'] = df_good['Size'] * 4.0
 
     def categoria_hor_exata(h):
-        if h >= 0.9999: return 'Perfeito'
-        elif h > 0.7: return 'Util'
-        else: return 'Nao Util'
+        if h >= 0.9999: 
+            return 'Perfeito'
+        elif h > 0.7: 
+            return 'Util'
+        else: 
+            return 'Nao Util'
 
     df_good['Categoria_HoR'] = df_good['HoR'].apply(categoria_hor_exata)
 
@@ -274,11 +279,11 @@ def main():
         
         for _, row in df_resumo_tabela.iterrows():
             f.write(f"Classe: {row['Classe'].upper()}\n")
-            f.write(f"  - Segmentos Válidos: {row['Qtd_Total_Segmentos']}\n")
-            f.write(f"  - Tamanho (Max / Min / Médio): {row['Tamanho_Max_m2']:.2f} m² | {row['Tamanho_Min_m2']:.2f} m² | {row['Tamanho_Medio_m2']:.2f} m²\n")
-            f.write(f"  - HoR Perfeito (= 100%): {row['Qtd_HoR_Perfeito']} segmentos\n")
-            f.write(f"  - HoR Útil (< 100% e > 70%): {row['Qtd_HoR_Util']} segmentos (Taxa Média: {row['Taxa_Media_HoR_Util']*100:.2f}%)\n")
-            f.write(f"  - HoR Não Útil (<= 70%): {row['Qtd_HoR_Nao_Util']} segmentos (Taxa Média: {row['Taxa_Media_HoR_Nao_Util']*100:.2f}%)\n")
+            f.write(f" - Segmentos Válidos: {row['Qtd_Total_Segmentos']}\n")
+            f.write(f" - Tamanho (Max / Min / Médio): {row['Tamanho_Max_m2']:.2f} m² | {row['Tamanho_Min_m2']:.2f} m² | {row['Tamanho_Medio_m2']:.2f} m²\n")
+            f.write(f" - HoR Perfeito (= 100%): {row['Qtd_HoR_Perfeito']} segmentos\n")
+            f.write(f" - HoR Útil (< 100% e > 70%): {row['Qtd_HoR_Util']} segmentos (Taxa Média: {row['Taxa_Media_HoR_Util']*100:.2f}%)\n")
+            f.write(f" - HoR Não Útil (<= 70%): {row['Qtd_HoR_Nao_Util']} segmentos (Taxa Média: {row['Taxa_Media_HoR_Nao_Util']*100:.2f}%)\n")
             f.write("-" * 105 + "\n")
             
     print(f"✅ Relatório em Tabela gerado com sucesso em: {relatorio_tabela_csv}")
