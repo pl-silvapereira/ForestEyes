@@ -132,10 +132,8 @@ def aplicar_pansharpening_em_blocos(caminho_pan, caminho_multi, caminho_saida):
         return
 
     print("Aplicando Pan-sharpening (Fusão para 2m) em blocos para economia de RAM...")
-    with rasterio.open(caminho_pan) as pan_src:
+    with rasterio.open(caminho_pan) as pan_src, rasterio.open(caminho_multi) as multi_src:
         pan_meta = pan_src.meta.copy()
-    
-    with rasterio.open(caminho_multi) as multi_src:
         num_bands = multi_src.count
         pan_meta.update(
             count=num_bands, 
@@ -146,43 +144,43 @@ def aplicar_pansharpening_em_blocos(caminho_pan, caminho_multi, caminho_saida):
             blockysize=1024
         )
     
-    with rasterio.open(caminho_saida, 'w', **pan_meta) as dst:
-        block_size = 2048 # Tamanho da janela
-        height, width = pan_meta['height'], pan_meta['width']
-        
-        for y in range(0, height, block_size):
-            for x in range(0, width, block_size):
-                window_width = min(block_size, width - x)
-                window_height = min(block_size, height - y)
-                window = rasterio.windows.Window(x, y, window_width, window_height)
-                
-                pan_block = pan_src.read(1, window=window).astype(np.float32)
-                multi_block = np.empty((num_bands, window_height, window_width), dtype=np.float32)
-                win_transform = rasterio.windows.transform(window, pan_src.transform)
-                
-                reproject(
-                    source=rasterio.band(multi_src, tuple(range(1, num_bands + 1))),
-                    destination=multi_block,
-                    src_transform=multi_src.transform,
-                    src_crs=multi_src.crs,
-                    dst_transform=win_transform,
-                    dst_crs=pan_meta['crs'],
-                    resampling=Resampling.bilinear
-                )
-                
-                media_multi = np.mean(multi_block, axis=0)
-                media_multi[media_multi == 0] = 1e-6 
+        with rasterio.open(caminho_saida, 'w', **pan_meta) as dst:
+            block_size = 2048 # Tamanho da janela
+            height, width = pan_meta['height'], pan_meta['width']
+            
+            for y in range(0, height, block_size):
+                for x in range(0, width, block_size):
+                    window_width = min(block_size, width - x)
+                    window_height = min(block_size, height - y)
+                    window = rasterio.windows.Window(x, y, window_width, window_height)
+                    
+                    pan_block = pan_src.read(1, window=window).astype(np.float32)
+                    multi_block = np.empty((num_bands, window_height, window_width), dtype=np.float32)
+                    win_transform = rasterio.windows.transform(window, pan_src.transform)
+                    
+                    reproject(
+                        source=rasterio.band(multi_src, tuple(range(1, num_bands + 1))),
+                        destination=multi_block,
+                        src_transform=multi_src.transform,
+                        src_crs=multi_src.crs,
+                        dst_transform=win_transform,
+                        dst_crs=pan_meta['crs'],
+                        resampling=Resampling.bilinear
+                    )
+                    
+                    media_multi = np.mean(multi_block, axis=0)
+                    media_multi[media_multi == 0] = 1e-6 
 
-                ratio = pan_block / media_multi
-                pan_sharpened = np.clip(multi_block * ratio, 0, 65535).astype(np.uint16)
-                
-                dst.write(pan_sharpened, window=window)
-        
-        dst.set_band_description(1, "Red")
-        dst.set_band_description(2, "Green")
-        dst.set_band_description(3, "Blue")
-        if num_bands >= 4:
-            dst.set_band_description(4, "NIR")
+                    ratio = pan_block / media_multi
+                    pan_sharpened = np.clip(multi_block * ratio, 0, 65535).astype(np.uint16)
+                    
+                    dst.write(pan_sharpened, window=window)
+            
+            dst.set_band_description(1, "Red")
+            dst.set_band_description(2, "Green")
+            dst.set_band_description(3, "Blue")
+            if num_bands >= 4:
+                dst.set_band_description(4, "NIR")
 
 def obter_estatisticas_banda(src, band_idx, decimation=10):
     """Lê apenas uma pequena fração da imagem para calcular o realce de contraste de forma segura."""
