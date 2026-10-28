@@ -36,22 +36,17 @@ TIF_ORIGINAL = f'{BASE_DIR}/data/output/pansharpening/2024/3549904_2024_CBERS_TR
 # Saídas (Onde os arquivos gerados serão salvos)
 OUT_DIR = f'{BASE_DIR}/data/reports/2024_Classificacao_Desmatamento'
 
+# Criar a pasta de saída se ela não existir
 os.makedirs(OUT_DIR, exist_ok=True)
 print(f"Diretório de saída garantido em: {OUT_DIR}")
 
 # =====================================================================
-# 2. FUNÇÃO DE REESTRUTURAÇÃO COM BUSCA DINÂMICA
+# 2. FUNÇÃO DE REESTRUTURAÇÃO (ACHATAMENTO DE BANDAS)
 # =====================================================================
 def preparar_dataframe(df_path, label_alvo):
     df = pd.read_csv(df_path)
-    
-    # Listas de possíveis nomes para as colunas de ID e Banda
-    possiveis_ids = ['Segment_ID', 'segment_id', 'id', 'ID', 'Segmento', 'segment']
-    possiveis_bandas = ['Band', 'band', 'banda', 'Banda']
-    
-    # Busca qual desses nomes realmente existe no DataFrame
-    col_segmento = next((c for c in possiveis_ids if c in df.columns), None)
-    col_banda = next((c for c in possiveis_bandas if c in df.columns), None)
+    col_segmento = 'Segment_ID' if 'Segment_ID' in df.columns else 'segment_id' if 'segment_id' in df.columns else None
+    col_banda = 'Band' if 'Band' in df.columns else 'band' if 'band' in df.columns else None
 
     if col_segmento and col_banda:
         cols_features = [c for c in df.columns if c not in [col_segmento, col_banda, 'geometry']]
@@ -74,25 +69,18 @@ df_forest = preparar_dataframe(PATH_FOREST, label_alvo=1)
 df_non_forest = preparar_dataframe(PATH_NON_FOREST, label_alvo=0)
 df_completo = pd.concat([df_forest, df_non_forest], ignore_index=True)
 
-# Identificar dinamicamente a coluna de ID no dataframe final
-possiveis_ids_final = ['Segment_ID', 'segment_id', 'id', 'ID', 'Segmento', 'segment']
-col_id = next((col for col in possiveis_ids_final if col in df_completo.columns), None)
-
-if col_id is None:
-    print("\n[ERRO CRÍTICO] As colunas no seu CSV são:", list(df_completo.columns))
-    raise ValueError("Nenhuma coluna de identificação (ID) foi encontrada. Verifique as colunas acima.")
-
-print(f"Coluna de ID detectada com sucesso: '{col_id}'")
+# Guardar os IDs para cruzar com o Shapefile depois
+col_id = 'Segment_ID' if 'Segment_ID' in df_completo.columns else 'segment_id'
 ids_completo = df_completo[col_id].values
 y = df_completo['Target'].values
 
 # Filtrar colunas puramente numéricas para o treinamento
-cols_to_drop = ['Target', col_id, 'Class', 'classe', 'Label']
+cols_to_drop = ['Target', 'Segment_ID', 'segment_id', 'Class', 'classe', 'Label']
 df_features = df_completo.drop(columns=[c for c in cols_to_drop if c in df_completo.columns], errors='ignore')
 df_features_numericas = df_features.select_dtypes(include=[np.number])
 X = df_features_numericas.values
 
-print(f"Amostras: {len(X)} | Features numéricas processadas: {X.shape[1]}")
+print(f"Amostras: {len(X)} | Features: {X.shape[1]}")
 
 # =====================================================================
 # 4. TREINAMENTO DO MODELO SVM
@@ -129,39 +117,39 @@ plt.close()
 # =====================================================================
 print("\nProcessando cruzamento espacial e gerando mapas...")
 
-# Prever a classe para TODO o dataset
+# Prever a classe para TODO o dataset (para podermos mapear toda a imagem)
 X_all_scaled = scaler.transform(X)
 y_pred_all = svm_model.predict(X_all_scaled)
 
-# DataFrame com o resultado previsto
+# Criar DataFrame com o ID do segmento e o resultado previsto
 df_resultados = pd.DataFrame({col_id: ids_completo, 'Predicao': y_pred_all})
 
-# Carregar o Shapefile original
+# Carregar o Shapefile original dos segmentos
 gdf_seg = gpd.read_file(SHP_SEGMENTOS)
+col_shp_id = 'Segment_ID' if 'Segment_ID' in gdf_seg.columns else 'segment_id'
 
-# Buscar dinamicamente a coluna de ID dentro do Shapefile
-col_shp_id = next((c for c in possiveis_ids_final if c in gdf_seg.columns), None)
-if col_shp_id is None:
-    raise ValueError(f"Coluna de ID não encontrada no Shapefile. Colunas disponíveis: {list(gdf_seg.columns)}")
-
-# Fazer a junção (Merge)
+# Fazer a junção (Merge) usando o ID
 gdf_map = gdf_seg.merge(df_resultados, left_on=col_shp_id, right_on=col_id, how='left')
+
+# Segmentos sem previsão (não estavam nos CSVs) recebem -1 (Não Analisada)
 gdf_map['Predicao'] = gdf_map['Predicao'].fillna(-1).astype(int)
 
-# Criar coluna textual
+# Criar coluna em texto para facilitar visualização no QGIS
 condicoes = [gdf_map['Predicao'] == -1, gdf_map['Predicao'] == 0, gdf_map['Predicao'] == 1]
 escolhas = ['Não Analisada', 'Não-Floresta', 'Floresta']
 gdf_map['Classe'] = np.select(condicoes, escolhas, default='Erro')
 
-# Calcular a Área Projetada (UTM)
+# Calcular a Área (Projetando para UTM fuso 23S - EPSG:31983 - São José dos Campos)
+# Isso garante que o cálculo .area seja estritamente em metros quadrados reais.
 gdf_calc = gdf_map.to_crs(epsg=31983)
 gdf_desmatamento = gdf_calc[gdf_calc['Predicao'] == 0]
 
 area_m2 = gdf_desmatamento.area.sum()
-area_px = int(area_m2 / 4) # 1 pixel CBERS Pan = 4m²
+# Resolução do CBERS Pan-sharpened é 2m. Logo, 1 pixel = 2x2 = 4m².
+area_px = int(area_m2 / 4) 
 houve_desmatamento = area_m2 > 0
 
-# Salvar Relatório em Texto
+# Salvar Relatório Final em Texto
 texto_relatorio = f"""RELATÓRIO DE MONITORAMENTO - FORESTEYES
 =======================================
 Acurácia Balanceada (Teste): {b_acc:.4f}
@@ -183,9 +171,9 @@ print(texto_relatorio)
 shp_out_path = f'{OUT_DIR}/resultado_classificacao_3549904.shp'
 gdf_map.to_file(shp_out_path)
 
-# Gerar Mapa em PNG
+# Gerar Visualização em PNG do Mapa (Cinza, Vermelho, Verde)
 fig_map, ax_map = plt.subplots(figsize=(10, 10))
-cmap_map = ListedColormap(['gray', 'red', 'green'])
+cmap_map = ListedColormap(['gray', 'red', 'green']) # Cores rigorosamente alinhadas: -1, 0, 1
 gdf_map.plot(column='Predicao', cmap=cmap_map, legend=False, ax=ax_map)
 plt.title('Mapa de Classificação: Cinza(Não Analisada), Verde(Floresta), Vermelho(Não-Floresta)')
 plt.axis('off')
@@ -197,11 +185,17 @@ plt.close()
 # =====================================================================
 if houve_desmatamento:
     print("Gerando imagem TIF (True Color) focada nas áreas de desmatamento...")
+    
+    # Abrir a imagem TIF original
     with rasterio.open(TIF_ORIGINAL) as src:
+        # Garantir que a geometria de recorte está no mesmo CRS da imagem original
         geometrias_desmatamento = gdf_map[gdf_map['Predicao'] == 0].to_crs(src.crs).geometry.tolist()
+        
+        # Realizar a máscara (tudo que não for desmatamento ficará preto / nodata=0)
         out_image, out_transform = mask(src, geometrias_desmatamento, crop=False, filled=True, nodata=0)
         out_meta = src.meta.copy()
 
+    # Atualizar metadados para salvar o novo arquivo
     out_meta.update({
         "driver": "GTiff",
         "height": out_image.shape[1],
@@ -215,6 +209,6 @@ if houve_desmatamento:
         
     print(f"TIF de desmatamento gerado com sucesso em: {tif_out_path}")
 else:
-    print("Nenhum desmatamento detectado. TIF de máscara ignorado.")
+    print("Nenhum desmatamento detectado pelo modelo. Geração do TIF de máscara ignorada.")
 
-print(f"\nPipeline concluído! Todos os arquivos estão em:\n{OUT_DIR}")
+print(f"\nPipeline concluído com sucesso! Todos os arquivos estão disponíveis na pasta:\n{OUT_DIR}")
