@@ -72,7 +72,8 @@ def main():
 
     print("1. Lendo shapefile de classificação...")
     gdf_class = gpd.read_file(path_shp_class)
-    gdf_floresta = gdf_class[gdf_class['class_name'].isin(['Floresta', 'Floresta Antrópica'])].copy()
+    gdf_floresta = gdf_class[gdf_class['class_name'].isin(['Floresta'])].copy()
+    #gdf_floresta = gdf_class[gdf_class['class_name'].isin(['Floresta', 'Floresta Antrópica'])].copy()
     
     gdf_floresta['class_name'] = 'Segmentar'
     lista_segmentar = [gdf_floresta[['geometry', 'class_name']]]

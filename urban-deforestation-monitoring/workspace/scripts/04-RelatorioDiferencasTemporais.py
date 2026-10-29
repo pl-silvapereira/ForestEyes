@@ -14,8 +14,8 @@ from dotenv import load_dotenv
 def main():
     if len(sys.argv) < 4:
         print("❌ Erro: Parâmetros insuficientes.")
-        print("Uso correto: python 04-analisarDiferencasTemporais.py <code_muni> <ano_inicio> <ano_fim>")
-        print("Exemplo: python 04-analisarDiferencasTemporais.py 3549904 2020 2024")
+        print("Uso correto: python 04-RelatorioDiferencasTemporais.py <code_muni> <ano_inicio> <ano_fim>")
+        print("Exemplo: python 04-RelatorioDiferencasTemporais.py 3549904 2020 2024")
         sys.exit(1)
 
     code_muni = int(sys.argv[1])

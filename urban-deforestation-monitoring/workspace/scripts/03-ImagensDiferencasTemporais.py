@@ -48,8 +48,8 @@ def gerar_estilo_qml_mudancas(caminho_qml, map_cores):
 def main():
     if len(sys.argv) < 4:
         print("❌ Erro: Parâmetros insuficientes.")
-        print("Uso correto: python 04-gerarDiferencaClassificacao.py <code_muni> <ano_inicio> <ano_fim>")
-        print("Exemplo: python 04-gerarDiferencaClassificacao.py 3549904 2023 2024")
+        print("Uso correto: python 03-ImagensDiferencaClassificacao.py <code_muni> <ano_inicio> <ano_fim>")
+        print("Exemplo: python 03-ImagensDiferencaClassificacao.py 3549904 2023 2024")
         sys.exit(1)
 
     code_muni = str(sys.argv[1])

@@ -1,5 +1,5 @@
 earthengine-api>=0.1.300
-geobr>=0.7.0
+geobr==1.0.0
 requests==2.32.4
 python-dotenv>=1.0.0
 cbers4asat>=0.5.0
