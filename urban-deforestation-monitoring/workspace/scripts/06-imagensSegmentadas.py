@@ -15,23 +15,6 @@ from dotenv import load_dotenv
 warnings.filterwarnings("ignore", message=".*One of the clusters is empty.*")
 warnings.filterwarnings("ignore", category=UserWarning, module="scipy")
 
-def gerar_estilo_qml_raster(caminho_qml):
-    """Gera o arquivo de estilo .qml para o raster no QGIS com Brilho = 50 configurado por padrão."""
-    conteudo_qml = """<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
-<qgis version="3.28.0" styleCategories="AllStyleCategories">
-  <pipe>
-    <rasterrenderer type="multibandcolor" redBand="1" greenBand="2" blueBand="3" opacity="1" alphaBand="-1">
-      <rasterTransparency/>
-    </rasterrenderer>
-    <brightnesscontrast brightness="50" contrast="0" gamma="1"/>
-    <huesaturation colorizeGreen="128" colorizeOn="0" colorizeRed="255" colorizeBlue="128" colorizeStrength="100" saturation="0" grayscaleMode="0"/>
-    <rasterresampler maxOversampling="2"/>
-  </pipe>
-  <blendMode>0</blendMode>
-</qgis>"""
-    with open(caminho_qml, 'w', encoding='utf-8') as f:
-        f.write(conteudo_qml)
-
 def main():
     if len(sys.argv) < 4:
         print("❌ Erro: Parâmetros insuficientes.")
@@ -54,7 +37,6 @@ def main():
     path_shp_binario = os.path.join(output_seg_dir, f"{code_muni}_Segmentar_vs_NaoSegmentar_{ano_fim}.shp")
     path_cbers = os.path.join(project_root, "data", "output", "pansharpening", ano_fim, f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif")
     path_tif_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_ContornosBrancos_{ano_fim}.tif")
-    path_qml_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_ContornosBrancos_{ano_fim}.qml")
 
     if not os.path.exists(path_shp_binario) or not os.path.exists(path_cbers):
         print("[ERRO CRÍTICO] Arquivos base não encontrados.", flush=True)
@@ -166,14 +148,9 @@ def main():
                 gc.collect()
 
     shutil.move(temp_tif_local, path_tif_slic)
-
-    print("4. Gerando estilo QML com Brilho = 50 pré-configurado para o QGIS...")
-    gerar_estilo_qml_raster(path_qml_slic)
-
-    print(f"\n✅ Processamento concluído:")
-    print(f"   -> Imagem TIF: {path_tif_slic}")
-    print(f"   -> Estilo QML: {path_qml_slic}")
-    print("\n🎉 O QGIS aplicará automaticamente o Brilho 50 ao carregar o arquivo!")
+    print(f"\n✅ Imagem raster de superpixels (restrita à classe 'Segmentar') gerada em:")
+    print(f"   -> {path_tif_slic}")
+    print("\n🎉 Geração de imagem segmentada concluída!")
 
 if __name__ == "__main__":
     main()
