@@ -59,19 +59,22 @@ def main():
         cbers_shape = (src.height, src.width)
         num_bands = src.count
 
-    print("2. Rasterizando polígonos de máscara do Shapefile...", flush=True)
+    print("2. Rasterizando EXCLUSIVAMENTE a classe 'Segmentar' do Shapefile...", flush=True)
     gdf_binario = gpd.read_file(path_shp_binario).to_crs(cbers_crs)
-    geom_seg = gdf_binario[gdf_binario['class_name'] == 'Segmentar'].geometry
-    geom_nao_seg = gdf_binario[gdf_binario['class_name'] == 'Nao_Segmentar'].geometry
-
-    mask_seg = rasterize([(geom, 1) for geom in geom_seg], out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8)
-    mask_nao_seg = rasterize([(geom, 1) for geom in geom_nao_seg], out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8)
     
-    # Máscara total do município
-    mask_muni = ((mask_seg == 1) | (mask_nao_seg == 1)).astype(np.uint8)
+    # Filtro estrito: apenas feições rotuladas como 'Segmentar'
+    gdf_segmentar = gdf_binario[gdf_binario['class_name'] == 'Segmentar']
+    
+    if gdf_segmentar.empty:
+        print("[AVISO] Nenhum polígono com a classe 'Segmentar' foi encontrado.")
+        sys.exit(0)
+
+    geom_seg = gdf_segmentar.geometry
+    mask_seg = rasterize([(geom, 1) for geom in geom_seg], out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8)
+    
     qps = 250.0  # Quantidade de Pixels por Superpixel alvo
 
-    print(f"\n3. Processando SLIC por blocos e desenhando contornos brancos...", flush=True)
+    print(f"\n3. Processando SLIC por blocos restrito à máscara 'Segmentar'...", flush=True)
     temp_tif_local = f"/content/temp_slic_{code_muni}_{ano_fim}.tif"
     
     tile_size = 1024 
@@ -100,13 +103,13 @@ def main():
                 w_janela = min(tile_size, w - x)
                 window = Window(x, y, w_janela, h_janela)
                 
-                mask_muni_tile = mask_muni[y:y+h_janela, x:x+w_janela]
-                qtp_muni_tile = np.sum(mask_muni_tile)
+                mask_seg_tile = mask_seg[y:y+h_janela, x:x+w_janela]
+                qtp_seg_tile = np.sum(mask_seg_tile)
                 
                 rgbnir_raw = src.read(window=window) 
 
-                if qtp_muni_tile > 0:
-                    qts_tile = int(qtp_muni_tile / qps)
+                if qtp_seg_tile > 0:
+                    qts_tile = int(qtp_seg_tile / qps)
                     if qts_tile > 0:
                         rgbnir_ch_last = np.moveaxis(rgbnir_raw, 0, -1)
                         
@@ -115,33 +118,37 @@ def main():
                         if tile_max > 0: 
                             rgb_slic /= tile_max 
 
+                        # Aplicar SLIC unicamente sobre pixels da classe 'Segmentar'
                         segmentos_tile = slic(
                             rgb_slic, 
                             n_segments=qts_tile, 
                             compactness=10, 
-                            mask=(mask_muni_tile == 1), 
+                            mask=(mask_seg_tile == 1), 
                             start_label=1, 
                             max_num_iter=5
                         )
                         
                         if np.any(segmentos_tile > 0):
-                            # Desenhar borda branca nos contornos dos superpixels
+                            # Desenhar bordas brancas somente nos contornos dos superpixels gerados na área 'Segmentar'
                             contornos_tile = find_boundaries(segmentos_tile, mode='inner')
                             rgbnir_raw[0][contornos_tile] = max_r
                             rgbnir_raw[1][contornos_tile] = max_g
                             rgbnir_raw[2][contornos_tile] = max_b
                             
-                            print(f"  ✅ [Bloco {bloco_atual}/{total_blocos}] -> Superpixels e contornos desenhados.", flush=True)
+                            print(f"  ✅ [Bloco {bloco_atual}/{total_blocos}] -> Segmentados superpixels sobre classe 'Segmentar'.", flush=True)
                         else:
                             if bloco_atual % 20 == 0:
-                                print(f"  ⏩ [Bloco {bloco_atual}/{total_blocos}] -> Área sem máscara...", flush=True)
+                                print(f"  ⏩ [Bloco {bloco_atual}/{total_blocos}] -> Bloco sem superpixels válidos...", flush=True)
+                else:
+                    if bloco_atual % 20 == 0:
+                        print(f"  ⏩ [Bloco {bloco_atual}/{total_blocos}] -> Fora da classe 'Segmentar'...", flush=True)
 
                 dst.write(rgbnir_raw, window=window)
-                del rgbnir_raw, mask_muni_tile
+                del rgbnir_raw, mask_seg_tile
                 gc.collect()
 
     shutil.move(temp_tif_local, path_tif_slic)
-    print(f"\n✅ Imagem raster de superpixels gerada com sucesso em:")
+    print(f"\n✅ Imagem raster de superpixels (restrita à classe 'Segmentar') gerada em:")
     print(f"   -> {path_tif_slic}")
     print("\n🎉 Geração de imagem segmentada concluída!")
 
