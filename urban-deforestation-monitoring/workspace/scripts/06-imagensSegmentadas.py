@@ -15,6 +15,39 @@ from dotenv import load_dotenv
 warnings.filterwarnings("ignore", message=".*One of the clusters is empty.*")
 warnings.filterwarnings("ignore", category=UserWarning, module="scipy")
 
+def gerar_estilo_qml_raster(caminho_qml, min_r=56, max_r=1342, min_g=74, max_g=1050, min_b=101, max_b=1267):
+    """Gera o arquivo de estilo .qml para o raster no QGIS com Brilho = 50 
+    e os limites Mínimo e Máximo configurados diretamente para cada banda."""
+    conteudo_qml = f"""<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
+<qgis version="3.28.0" styleCategories="AllStyleCategories">
+  <pipe>
+    <rasterrenderer type="multibandcolor" redBand="1" greenBand="2" blueBand="3" opacity="1" alphaBand="-1">
+      <rasterTransparency/>
+      <redContrastEnhancement>
+        <minValue>{min_r}</minValue>
+        <maxValue>{max_r}</maxValue>
+        <algorithm>StretchToMinimumMaximum</algorithm>
+      </redContrastEnhancement>
+      <greenContrastEnhancement>
+        <minValue>{min_g}</minValue>
+        <maxValue>{max_g}</maxValue>
+        <algorithm>StretchToMinimumMaximum</algorithm>
+      </greenContrastEnhancement>
+      <blueContrastEnhancement>
+        <minValue>{min_b}</minValue>
+        <maxValue>{max_b}</maxValue>
+        <algorithm>StretchToMinimumMaximum</algorithm>
+      </blueContrastEnhancement>
+    </rasterrenderer>
+    <brightnesscontrast brightness="50" contrast="0" gamma="1"/>
+    <huesaturation colorizeGreen="128" colorizeOn="0" colorizeRed="255" colorizeBlue="128" colorizeStrength="100" saturation="0" grayscaleMode="0"/>
+    <rasterresampler maxOversampling="2"/>
+  </pipe>
+  <blendMode>0</blendMode>
+</qgis>"""
+    with open(caminho_qml, 'w', encoding='utf-8') as f:
+        f.write(conteudo_qml)
+
 def main():
     if len(sys.argv) < 4:
         print("❌ Erro: Parâmetros insuficientes.")
@@ -34,16 +67,17 @@ def main():
     output_seg_dir = os.path.join(project_root, "data", "output", "segmentation", ano_fim)
     os.makedirs(output_seg_dir, exist_ok=True)
 
-    path_shp_binario = os.path.join(output_seg_dir, f"{code_muni}_Segmentar_vs_NaoSegmentar_{ano_fim}.shp")
+    path_shp_4classes = os.path.join(output_seg_dir, f"{code_muni}_Segmentacao_4Classes_{ano_fim}.shp")
     path_cbers = os.path.join(project_root, "data", "output", "pansharpening", ano_fim, f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif")
-    path_tif_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_ContornosBrancos_{ano_fim}.tif")
+    path_tif_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_Contornos_{ano_fim}.tif")
+    path_qml_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_Contornos_{ano_fim}.qml")
 
-    if not os.path.exists(path_shp_binario) or not os.path.exists(path_cbers):
-        print("[ERRO CRÍTICO] Arquivos base não encontrados.", flush=True)
+    if not os.path.exists(path_shp_4classes) or not os.path.exists(path_cbers):
+        print("[ERRO CRÍTICO] Arquivos base não encontrados (Shapefile 4 classes ou CBERS).", flush=True)
         sys.exit(1)
 
     print("=" * 80, flush=True)
-    print(f"🖼️ SCRIPT 06 - GERAÇÃO DE IMAGENS SEGMENTADAS (SUPERPIXELS) ({ano_fim})", flush=True)
+    print(f"🖼️ SCRIPT 06 - GERAÇÃO DE IMAGENS SEGMENTADAS (FLORESTA vs NÃO FLORESTA) ({ano_fim})", flush=True)
     print("=" * 80, flush=True)
 
     # Valores de estatísticas radiométricas (extraídos da cena CBERS-4A)
@@ -59,22 +93,25 @@ def main():
         cbers_shape = (src.height, src.width)
         num_bands = src.count
 
-    print("2. Rasterizando EXCLUSIVAMENTE a classe 'Segmentar' do Shapefile...", flush=True)
-    gdf_binario = gpd.read_file(path_shp_binario).to_crs(cbers_crs)
+    print("2. Rasterizando as classes 'Floresta' e 'Nao_Floresta' do Shapefile de 4 classes...", flush=True)
+    gdf_4classes = gpd.read_file(path_shp_4classes).to_crs(cbers_crs)
     
-    # Filtro estrito: apenas feições rotuladas como 'Segmentar'
-    gdf_segmentar = gdf_binario[gdf_binario['class_name'] == 'Segmentar']
-    
-    if gdf_segmentar.empty:
-        print("[AVISO] Nenhum polígono com a classe 'Segmentar' foi encontrado.")
-        sys.exit(0)
+    gdf_floresta = gdf_4classes[gdf_4classes['class_name'] == 'Floresta']
+    gdf_nao_floresta = gdf_4classes[gdf_4classes['class_name'] == 'Nao_Floresta']
 
-    geom_seg = gdf_segmentar.geometry
-    mask_seg = rasterize([(geom, 1) for geom in geom_seg], out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8)
-    
+    mask_floresta = rasterize(
+        [(geom, 1) for geom in gdf_floresta.geometry],
+        out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8
+    ) if not gdf_floresta.empty else np.zeros(cbers_shape, dtype=np.uint8)
+
+    mask_nao_floresta = rasterize(
+        [(geom, 1) for geom in gdf_nao_floresta.geometry],
+        out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8
+    ) if not gdf_nao_floresta.empty else np.zeros(cbers_shape, dtype=np.uint8)
+
     qps = 250.0  # Quantidade de Pixels por Superpixel alvo
 
-    print(f"\n3. Processando SLIC por blocos restrito à máscara 'Segmentar'...", flush=True)
+    print(f"\n3. Processando SLIC por blocos com contornos diferenciados...", flush=True)
     temp_tif_local = f"/content/temp_slic_{code_muni}_{ano_fim}.tif"
     
     tile_size = 1024 
@@ -103,54 +140,70 @@ def main():
                 w_janela = min(tile_size, w - x)
                 window = Window(x, y, w_janela, h_janela)
                 
-                mask_seg_tile = mask_seg[y:y+h_janela, x:x+w_janela]
-                qtp_seg_tile = np.sum(mask_seg_tile)
+                mask_flor_tile = mask_floresta[y:y+h_janela, x:x+w_janela]
+                mask_nflor_tile = mask_nao_floresta[y:y+h_janela, x:x+w_janela]
                 
-                rgbnir_raw = src.read(window=window) 
+                rgbnir_raw = src.read(window=window)
 
-                if qtp_seg_tile > 0:
-                    qts_tile = int(qtp_seg_tile / qps)
-                    if qts_tile > 0:
-                        rgbnir_ch_last = np.moveaxis(rgbnir_raw, 0, -1)
-                        
-                        rgb_slic = rgbnir_ch_last[:, :, :3].astype(np.float32)
-                        tile_max = rgb_slic.max()
-                        if tile_max > 0: 
-                            rgb_slic /= tile_max 
+                rgbnir_ch_last = np.moveaxis(rgbnir_raw, 0, -1)
+                rgb_slic = rgbnir_ch_last[:, :, :3].astype(np.float32)
+                tile_max = rgb_slic.max()
+                if tile_max > 0:
+                    rgb_slic /= tile_max
 
-                        # Aplicar SLIC unicamente sobre pixels da classe 'Segmentar'
-                        segmentos_tile = slic(
-                            rgb_slic, 
-                            n_segments=qts_tile, 
-                            compactness=10, 
-                            mask=(mask_seg_tile == 1), 
-                            start_label=1, 
-                            max_num_iter=5
+                processed_any = False
+
+                # 3a. Segmentação da Classe Floresta -> Contorno Verde Fluorescente
+                qtp_flor = np.sum(mask_flor_tile)
+                if qtp_flor > 0:
+                    qts_flor = int(qtp_flor / qps)
+                    if qts_flor > 0:
+                        seg_flor = slic(
+                            rgb_slic, n_segments=qts_flor, compactness=10, 
+                            mask=(mask_flor_tile == 1), start_label=1, max_num_iter=5
                         )
-                        
-                        if np.any(segmentos_tile > 0):
-                            # Desenhar bordas brancas somente nos contornos dos superpixels gerados na área 'Segmentar'
-                            contornos_tile = find_boundaries(segmentos_tile, mode='inner')
-                            rgbnir_raw[0][contornos_tile] = max_r
-                            rgbnir_raw[1][contornos_tile] = max_g
-                            rgbnir_raw[2][contornos_tile] = max_b
-                            
-                            print(f"  ✅ [Bloco {bloco_atual}/{total_blocos}] -> Segmentados superpixels sobre classe 'Segmentar'.", flush=True)
-                        else:
-                            if bloco_atual % 20 == 0:
-                                print(f"  ⏩ [Bloco {bloco_atual}/{total_blocos}] -> Bloco sem superpixels válidos...", flush=True)
+                        if np.any(seg_flor > 0):
+                            contornos_flor = find_boundaries(seg_flor, mode='inner')
+                            rgbnir_raw[0][contornos_flor] = 0        # Red = 0
+                            rgbnir_raw[1][contornos_flor] = max_g    # Green = max (Verde Fluorescente)
+                            rgbnir_raw[2][contornos_flor] = 0        # Blue = 0
+                            processed_any = True
+
+                # 3b. Segmentação da Classe Nao_Floresta -> Contorno Vermelho
+                qtp_nflor = np.sum(mask_nflor_tile)
+                if qtp_nflor > 0:
+                    qts_nflor = int(qtp_nflor / qps)
+                    if qts_nflor > 0:
+                        seg_nflor = slic(
+                            rgb_slic, n_segments=qts_nflor, compactness=10, 
+                            mask=(mask_nflor_tile == 1), start_label=1, max_num_iter=5
+                        )
+                        if np.any(seg_nflor > 0):
+                            contornos_nflor = find_boundaries(seg_nflor, mode='inner')
+                            rgbnir_raw[0][contornos_nflor] = max_r   # Red = max (Vermelho)
+                            rgbnir_raw[1][contornos_nflor] = 0       # Green = 0
+                            rgbnir_raw[2][contornos_nflor] = 0       # Blue = 0
+                            processed_any = True
+
+                if processed_any:
+                    print(f"  ✅ [Bloco {bloco_atual}/{total_blocos}] -> Superpixels desenhados (Verde: Floresta / Vermelho: Não Floresta).", flush=True)
                 else:
                     if bloco_atual % 20 == 0:
-                        print(f"  ⏩ [Bloco {bloco_atual}/{total_blocos}] -> Fora da classe 'Segmentar'...", flush=True)
+                        print(f"  ⏩ [Bloco {bloco_atual}/{total_blocos}] -> Sem superpixels para segmentar...", flush=True)
 
                 dst.write(rgbnir_raw, window=window)
-                del rgbnir_raw, mask_seg_tile
+                del rgbnir_raw, mask_flor_tile, mask_nflor_tile
                 gc.collect()
 
     shutil.move(temp_tif_local, path_tif_slic)
-    print(f"\n✅ Imagem raster de superpixels (restrita à classe 'Segmentar') gerada em:")
-    print(f"   -> {path_tif_slic}")
-    print("\n🎉 Geração de imagem segmentada concluída!")
+
+    print("4. Gerando estilo QML com Brilho = 50 e Min/Max de cada banda pré-configurados para o QGIS...")
+    gerar_estilo_qml_raster(path_qml_slic, min_r, max_r, min_g, max_g, min_b, max_b)
+
+    print(f"\n✅ Processamento concluído com sucesso:")
+    print(f"   -> Imagem TIF: {path_tif_slic}")
+    print(f"   -> Estilo QML: {path_qml_slic}")
+    print("\n🎉 O QGIS aplicará automaticamente o Brilho 50 e o esticamento Min/Max (Banda 1: 56-1342, Banda 2: 74-1050, Banda 3: 101-1267) ao carregar o arquivo!")
 
 if __name__ == "__main__":
     main()
