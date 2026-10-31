@@ -17,7 +17,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="scipy")
 
 def gerar_estilo_qml_raster(caminho_qml, min_r=56, max_r=1342, min_g=74, max_g=1050, min_b=101, max_b=1267):
     """Gera o arquivo de estilo .qml para o raster no QGIS com Brilho = 50 
-    e os limites Mínimo e Máximo configurados diretamente para cada banda."""
+    e os limites Mínimo e Máximo configurados para cada banda."""
     conteudo_qml = f"""<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
 <qgis version="3.28.0" styleCategories="AllStyleCategories">
   <pipe>
@@ -67,20 +67,20 @@ def main():
     output_seg_dir = os.path.join(project_root, "data", "output", "segmentation", ano_fim)
     os.makedirs(output_seg_dir, exist_ok=True)
 
-    path_shp_4classes = os.path.join(output_seg_dir, f"{code_muni}_Segmentacao_4Classes_{ano_fim}.shp")
+    path_shp_3classes = os.path.join(output_seg_dir, f"{code_muni}_Segmentacao_3Classes_{ano_fim}.shp")
     path_cbers = os.path.join(project_root, "data", "output", "pansharpening", ano_fim, f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif")
     path_tif_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_Contornos_{ano_fim}.tif")
     path_qml_slic = os.path.join(output_seg_dir, f"{code_muni}_MaskSLIC_Contornos_{ano_fim}.qml")
 
-    if not os.path.exists(path_shp_4classes) or not os.path.exists(path_cbers):
-        print("[ERRO CRÍTICO] Arquivos base não encontrados (Shapefile 4 classes ou CBERS).", flush=True)
+    if not os.path.exists(path_shp_3classes) or not os.path.exists(path_cbers):
+        print("[ERRO CRÍTICO] Arquivos base não encontrados (Shapefile 3 classes ou CBERS).", flush=True)
         sys.exit(1)
 
     print("=" * 80, flush=True)
     print(f"🖼️ SCRIPT 06 - GERAÇÃO DE IMAGENS SEGMENTADAS (FLORESTA vs NÃO FLORESTA) ({ano_fim})", flush=True)
     print("=" * 80, flush=True)
 
-    # Valores de estatísticas radiométricas (extraídos da cena CBERS-4A)
+    # Valores de estatísticas radiométricas da cena CBERS-4A
     min_r, max_r = 56, 1342
     min_g, max_g = 74, 1050
     min_b, max_b = 101, 1267
@@ -93,11 +93,11 @@ def main():
         cbers_shape = (src.height, src.width)
         num_bands = src.count
 
-    print("2. Rasterizando as classes 'Floresta' e 'Nao_Floresta' do Shapefile de 4 classes...", flush=True)
-    gdf_4classes = gpd.read_file(path_shp_4classes).to_crs(cbers_crs)
+    print("2. Rasterizando as classes 'Floresta' e 'Nao_Floresta' do Shapefile de 3 classes...", flush=True)
+    gdf_3classes = gpd.read_file(path_shp_3classes).to_crs(cbers_crs)
     
-    gdf_floresta = gdf_4classes[gdf_4classes['class_name'] == 'Floresta']
-    gdf_nao_floresta = gdf_4classes[gdf_4classes['class_name'] == 'Nao_Floresta']
+    gdf_floresta = gdf_3classes[gdf_3classes['class_name'] == 'Floresta']
+    gdf_nao_floresta = gdf_3classes[gdf_3classes['class_name'] == 'Nao_Floresta']
 
     mask_floresta = rasterize(
         [(geom, 1) for geom in gdf_floresta.geometry],
@@ -109,7 +109,7 @@ def main():
         out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8
     ) if not gdf_nao_floresta.empty else np.zeros(cbers_shape, dtype=np.uint8)
 
-    qps = 250.0  # Quantidade de Pixels por Superpixel alvo
+    qps = 250.0  # Pixels por Superpixel alvo
 
     print(f"\n3. Processando SLIC por blocos com contornos diferenciados...", flush=True)
     temp_tif_local = f"/content/temp_slic_{code_muni}_{ano_fim}.tif"
@@ -128,7 +128,6 @@ def main():
         if num_bands >= 4:
             dst.set_band_description(4, "NIR")
         
-        # Tags de estatísticas de contraste radiométrico
         dst.update_tags(1, STATISTICS_MINIMUM=str(min_r), STATISTICS_MAXIMUM=str(max_r))
         dst.update_tags(2, STATISTICS_MINIMUM=str(min_g), STATISTICS_MAXIMUM=str(max_g))
         dst.update_tags(3, STATISTICS_MINIMUM=str(min_b), STATISTICS_MAXIMUM=str(max_b))
@@ -197,13 +196,12 @@ def main():
 
     shutil.move(temp_tif_local, path_tif_slic)
 
-    print("4. Gerando estilo QML com Brilho = 50 e Min/Max de cada banda pré-configurados para o QGIS...")
+    print("4. Gerando estilo QML com Brilho = 50 e Min/Max para o QGIS...")
     gerar_estilo_qml_raster(path_qml_slic, min_r, max_r, min_g, max_g, min_b, max_b)
 
     print(f"\n✅ Processamento concluído com sucesso:")
     print(f"   -> Imagem TIF: {path_tif_slic}")
     print(f"   -> Estilo QML: {path_qml_slic}")
-    print("\n🎉 O QGIS aplicará automaticamente o Brilho 50 e o esticamento Min/Max (Banda 1: 56-1342, Banda 2: 74-1050, Banda 3: 101-1267) ao carregar o arquivo!")
 
 if __name__ == "__main__":
     main()

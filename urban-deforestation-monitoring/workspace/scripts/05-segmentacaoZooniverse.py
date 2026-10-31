@@ -14,11 +14,10 @@ import geobr
 from dotenv import load_dotenv
 
 def gerar_estilo_qml_garantido(caminho_qml):
-    """Gera o estilo QML com 4 classes de cores distintas:
+    """Gera o estilo QML com 3 classes de cores:
        - Floresta: Verde (#33a02c)
        - Nao_Floresta: Vermelho (#e31a1c)
-       - Nao_Segmentar: Amarelo (#ffe600)
-       - Extra_Geopolitico: Preto (#000000)
+       - Nao_Segmentar: Preto (#000000)
     """
     conteudo_qml = """<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
 <qgis styleCategories="AllStyleCategories" version="3.28.0">
@@ -26,8 +25,7 @@ def gerar_estilo_qml_garantido(caminho_qml):
     <categories>
       <category render="true" symbol="0" value="Floresta" label="Floresta (Verde)"/>
       <category render="true" symbol="1" value="Nao_Floresta" label="Nao Floresta (Vermelho)"/>
-      <category render="true" symbol="2" value="Nao_Segmentar" label="Nao Segmentar (Amarelo)"/>
-      <category render="true" symbol="3" value="Extra_Geopolitico" label="Extra Geopolitico (Preto)"/>
+      <category render="true" symbol="2" value="Nao_Segmentar" label="Nao Segmentar (Preto)"/>
     </categories>
     <symbols>
       <symbol alpha="1" type="fill" name="0">
@@ -43,12 +41,6 @@ def gerar_estilo_qml_garantido(caminho_qml):
         </layer>
       </symbol>
       <symbol alpha="1" type="fill" name="2">
-        <layer pass="0" class="SimpleFill" locked="0">
-          <prop k="color" v="255,230,0,255"/>
-          <prop k="outline_style" v="no"/>
-        </layer>
-      </symbol>
-      <symbol alpha="1" type="fill" name="3">
         <layer pass="0" class="SimpleFill" locked="0">
           <prop k="color" v="0,0,0,255"/>
           <prop k="outline_style" v="no"/>
@@ -83,7 +75,7 @@ def main():
     os.makedirs(output_seg_dir, exist_ok=True)
 
     print("=" * 80)
-    print(f"🔬 SCRIPT 05 - GERAÇÃO DO MAPA DE SEGMENTAÇÃO EM 4 CLASSES ({ano_fim})")
+    print(f"🔬 SCRIPT 05 - GERAÇÃO DO MAPA DE SEGMENTAÇÃO EM 3 CLASSES ({ano_fim})")
     print("=" * 80)
 
     path_shp_class = os.path.join(project_root, "data", "output", "classification", ano_fim, f"{code_muni}_Classificado_ForestEyes_{ano_fim}.shp")
@@ -126,30 +118,30 @@ def main():
     retangulo = box(bounds[0], bounds[1], bounds[2], bounds[3])
 
     # 4. Processamento de Geometrias e Diferenças Espaciais
-    print("4. Executando overlay espacial das 4 classes...")
+    print("4. Executando overlay espacial das 3 classes...")
     geom_floresta = geom_floresta_raw.intersection(limite)
     geom_nao_floresta = geom_nao_floresta_raw.difference(geom_floresta).intersection(limite)
 
     geom_segmentar_total = geom_floresta.union(geom_nao_floresta)
-    geom_nao_segmentar = limite.difference(geom_segmentar_total)
 
-    geom_extra_geopolitico = retangulo.difference(limite)
+    # Nao_Segmentar unifica o restante do município + área externa até a borda do retângulo
+    geom_nao_segmentar = retangulo.difference(geom_segmentar_total)
 
     # 5. Montagem do GeoDataFrame Final
-    gdf_4classes = gpd.GeoDataFrame({
-        'class_name': ['Floresta', 'Nao_Floresta', 'Nao_Segmentar', 'Extra_Geopolitico'],
-        'geometry': [geom_floresta, geom_nao_floresta, geom_nao_segmentar, geom_extra_geopolitico]
+    gdf_3classes = gpd.GeoDataFrame({
+        'class_name': ['Floresta', 'Nao_Floresta', 'Nao_Segmentar'],
+        'geometry': [geom_floresta, geom_nao_floresta, geom_nao_segmentar]
     }, crs=gdf_class.crs)
 
-    gdf_4classes = gdf_4classes[~gdf_4classes.geometry.is_empty]
-    gdf_4classes = gdf_4classes.explode(index_parts=False).reset_index(drop=True)
+    gdf_3classes = gdf_3classes[~gdf_3classes.geometry.is_empty]
+    gdf_3classes = gdf_3classes.explode(index_parts=False).reset_index(drop=True)
 
-    nome_base = f"{code_muni}_Segmentacao_4Classes_{ano_fim}"
+    nome_base = f"{code_muni}_Segmentacao_3Classes_{ano_fim}"
     path_shp = os.path.join(output_seg_dir, f"{nome_base}.shp")
     path_qml = os.path.join(output_seg_dir, f"{nome_base}.qml")
 
     print("5. Salvando Shapefile...")
-    gdf_4classes.to_file(path_shp, encoding='utf-8')
+    gdf_3classes.to_file(path_shp, encoding='utf-8')
     
     print("6. Gerando arquivo de estilo QML...")
     gerar_estilo_qml_garantido(path_qml)
