@@ -49,7 +49,6 @@ def baixar_mapbiomas(code_muni, ano, limite_geopolitico, nome_cidade, uf, projet
     os.makedirs(diretorio_data_input, exist_ok=True)
     caminho_mapbiomas_local = os.path.join(diretorio_data_input, nome_arquivo_mapbiomas)
 
-    # Se já existir, pula
     if os.path.exists(caminho_mapbiomas_local) and os.path.getsize(caminho_mapbiomas_local) > 1000:
         print(f"\n--- MAPBIOMAS ({ano}) JÁ BAIXADO: {caminho_mapbiomas_local} ---")
         return caminho_mapbiomas_local
@@ -107,7 +106,6 @@ def baixar_mapbiomas(code_muni, ano, limite_geopolitico, nome_cidade, uf, projet
     return caminho_mapbiomas_local
 
 def recortar_banda(caminho_in, gdf_limite, caminho_out):
-    """Recorta o TIF baixado para os limites da cidade, evitando uso massivo de RAM depois."""
     with rasterio.open(caminho_in) as src:
         gdf_proj = gdf_limite.to_crs(src.crs)
         try:
@@ -145,7 +143,7 @@ def aplicar_pansharpening_em_blocos(caminho_pan, caminho_multi, caminho_saida):
         )
     
         with rasterio.open(caminho_saida, 'w', **pan_meta) as dst:
-            block_size = 2048 # Tamanho da janela
+            block_size = 2048
             height, width = pan_meta['height'], pan_meta['width']
             
             for y in range(0, height, block_size):
@@ -183,7 +181,6 @@ def aplicar_pansharpening_em_blocos(caminho_pan, caminho_multi, caminho_saida):
                 dst.set_band_description(4, "NIR")
 
 def obter_estatisticas_banda(src, band_idx, decimation=10):
-    """Lê apenas uma pequena fração da imagem para calcular o realce de contraste de forma segura."""
     out_shape = (1, max(1, src.height // decimation), max(1, src.width // decimation))
     amostra = src.read(band_idx, out_shape=out_shape).astype(np.float32)
     p2, p98 = np.percentile(amostra[amostra > 0], (2, 98)) if np.any(amostra > 0) else (0, 1)
@@ -192,7 +189,6 @@ def obter_estatisticas_banda(src, band_idx, decimation=10):
     return p2, p98
 
 def normalizar_array(data, p2, p98):
-    """Aplica o contraste para um array."""
     return np.clip((data - p2) / (p98 - p2) * 255.0, 0, 255).astype(np.uint8)
 
 def gerar_composicoes_zooniverse(caminho_stack, pasta_saida, code_muni, ano):
@@ -211,10 +207,10 @@ def gerar_composicoes_zooniverse(caminho_stack, pasta_saida, code_muni, ano):
         width = meta['width']
 
         print("Calculando estatísticas de contraste (amostragem rápida)...")
-        p2_r, p98_r = obter_estatisticas_banda(src, 1) # Red
-        p2_g, p98_g = obter_estatisticas_banda(src, 2) # Green
-        p2_b, p98_b = obter_estatisticas_banda(src, 3) # Blue
-        p2_nir, p98_nir = obter_estatisticas_banda(src, 4) # NIR
+        p2_r, p98_r = obter_estatisticas_banda(src, 1)
+        p2_g, p98_g = obter_estatisticas_banda(src, 2)
+        p2_b, p98_b = obter_estatisticas_banda(src, 3)
+        p2_nir, p98_nir = obter_estatisticas_banda(src, 4)
 
         meta_rgb = meta.copy()
         meta_rgb.update(count=3, dtype=rasterio.uint8, photometric='RGB')
@@ -233,54 +229,46 @@ def gerar_composicoes_zooniverse(caminho_stack, pasta_saida, code_muni, ano):
              rasterio.open(path_nir_gb, "w", **meta_rgb) as dst_nir_gb, \
              rasterio.open(path_ndvi, "w", **meta_ndvi) as dst_ndvi:
 
-            # Metadados pro QGIS ler certinho
             dst_rgb.set_band_description(1, "Red"); dst_rgb.set_band_description(2, "Green"); dst_rgb.set_band_description(3, "Blue")
             dst_nir_rg.set_band_description(1, "NIR"); dst_nir_rg.set_band_description(2, "Red"); dst_nir_rg.set_band_description(3, "Green")
             dst_nir_gb.set_band_description(1, "NIR"); dst_nir_gb.set_band_description(2, "Green"); dst_nir_gb.set_band_description(3, "Blue")
             dst_ndvi.set_band_description(1, "NDVI")
 
-            block_size = 2048 # Mesmo tamanho de bloco do pan-sharpening
+            block_size = 2048
             for y in range(0, height, block_size):
                 for x in range(0, width, block_size):
                     window_width = min(block_size, width - x)
                     window_height = min(block_size, height - y)
                     window = rasterio.windows.Window(x, y, window_width, window_height)
 
-                    # Lê só aquele pedaço
                     r_data = src.read(1, window=window).astype(np.float32)
                     g_data = src.read(2, window=window).astype(np.float32)
                     b_data = src.read(3, window=window).astype(np.float32)
                     nir_data = src.read(4, window=window).astype(np.float32)
 
-                    # Normaliza
                     r_norm = normalizar_array(r_data, p2_r, p98_r)
                     g_norm = normalizar_array(g_data, p2_g, p98_g)
                     b_norm = normalizar_array(b_data, p2_b, p98_b)
                     nir_norm = normalizar_array(nir_data, p2_nir, p98_nir)
 
-                    # Escreve RGB (Cor Natural)
                     dst_rgb.write(r_norm, 1, window=window)
                     dst_rgb.write(g_norm, 2, window=window)
                     dst_rgb.write(b_norm, 3, window=window)
 
-                    # Escreve Falsa Cor (NIR-R-G)
                     dst_nir_rg.write(nir_norm, 1, window=window)
                     dst_nir_rg.write(r_norm, 2, window=window)
                     dst_nir_rg.write(g_norm, 3, window=window)
 
-                    # Escreve Falsa Cor 2 (NIR-G-B)
                     dst_nir_gb.write(nir_norm, 1, window=window)
                     dst_nir_gb.write(g_norm, 2, window=window)
                     dst_nir_gb.write(b_norm, 3, window=window)
 
-                    # Processa NDVI localmente
                     denominator = (nir_data + r_data)
                     ndvi_block = np.zeros_like(r_data)
                     valid_mask = denominator != 0
                     ndvi_block[valid_mask] = (nir_data[valid_mask] - r_data[valid_mask]) / denominator[valid_mask]
                     ndvi_scaled = np.clip((ndvi_block + 1) / 2 * 255, 0, 255).astype(np.uint8)
                     
-                    # Escreve NDVI
                     dst_ndvi.write(ndvi_scaled, 1, window=window)
 
     print(f" -> Composições geradas com sucesso na pasta:\n {pasta_comp}")
@@ -297,60 +285,77 @@ def baixar_e_processar_cbers(code_muni, ano_fim, dados_json, projeto_root, gdf_m
     os.makedirs(pasta_entrada_cbers, exist_ok=True)
     os.makedirs(pasta_saida_pansharpening, exist_ok=True)
 
-    email_inpe = 'pereira.pedro@unifesp.br'
-    api = Cbers4aAPI(email_inpe)
-
-    resultados = api.query(
-        location=bbox_muni,
-        initial_date=date(int(ano_fim), 1, 1),
-        end_date=date(int(ano_fim), 12, 31),
-        cloud=20, 
-        limit=100,
-        collections=['CBERS4A_WPM_L4_DN']
-    )
-
-    cenas_encontradas = resultados.get('features', [])
-    if not cenas_encontradas:
-        print(f"Nenhuma cena CBERS encontrada para o ano {ano_fim}.")
-        sys.exit(1)
-
-    cena_selecionada = cenas_encontradas[1] if len(cenas_encontradas) > 1 else cenas_encontradas[0]
-    id_cena = cena_selecionada.get('id', 'CBERS_4A_WPM')
-    
-    ativos = cena_selecionada.get('assets', {})
-    url_thumbnail = ativos['thumbnail']['href']
-    
-    url_base_tiff = url_thumbnail.replace("/datastore/BROWSE/", "/api/download/TIFF/").replace("/BROWSE/", "/api/download/TIFF/").replace(".jpg", "").replace(".png", "")
-    if not url_base_tiff.endswith("_L4"):
-        url_base_tiff += "_L4"
-    
     bandas = ['BAND0', 'BAND1', 'BAND2', 'BAND3', 'BAND4']
     arquivos_originais = {}
+
+    # 1. Verificar se as bandas já existem localmente no Drive
+    arquivos_existentes = [f for f in os.listdir(pasta_entrada_cbers) if f.endswith("_BAND0.tif")]
     
-    for banda in bandas:
-        url_download = f"{url_base_tiff}_{banda}.tif?email={email_inpe}"
-        caminho_arquivo = os.path.join(pasta_entrada_cbers, f"{id_cena}_{banda}.tif")
-        arquivos_originais[banda] = caminho_arquivo
-
-        if os.path.exists(caminho_arquivo) and os.path.getsize(caminho_arquivo) > 10000:
-            continue
-
-        sucesso = False
-        print(f"Baixando {banda} do INPE...")
-        for tentativa in range(1, 4):
-            try:
-                resposta = requests.get(url_download, stream=True, timeout=120)
-                resposta.raise_for_status()
-                with open(caminho_arquivo, 'wb') as f:
-                    for chunk in resposta.iter_content(chunk_size=8192):
-                        if chunk: f.write(chunk)
-                sucesso = True
-                break
-            except requests.exceptions.RequestException:
-                time.sleep(5)
+    if arquivos_existentes:
+        id_cena = arquivos_existentes[0].replace("_BAND0.tif", "")
+        print(f"Cena CBERS detectada localmente na pasta: {id_cena}")
+        for banda in bandas:
+            arquivos_originais[banda] = os.path.join(pasta_entrada_cbers, f"{id_cena}_{banda}.tif")
         
-        if not sucesso:
+        todas_existem = all(os.path.exists(fp) and os.path.getsize(fp) > 10000 for fp in arquivos_originais.values())
+    else:
+        todas_existem = False
+
+    # 2. Se não existirem todas localmente, realiza a consulta no INPE e download
+    if not todas_existem:
+        email_inpe = 'pereira.pedro@unifesp.br'
+        api = Cbers4aAPI(email_inpe)
+
+        resultados = api.query(
+            location=bbox_muni,
+            initial_date=date(int(ano_fim), 1, 1),
+            end_date=date(int(ano_fim), 12, 31),
+            cloud=20, 
+            limit=100,
+            collections=['CBERS4A_WPM_L4_DN']
+        )
+
+        cenas_encontradas = resultados.get('features', [])
+        if not cenas_encontradas:
+            print(f"Nenhuma cena CBERS encontrada via API para o ano {ano_fim}.")
             sys.exit(1)
+
+        cena_selecionada = cenas_encontradas[1] if len(cenas_encontradas) > 1 else cenas_encontradas[0]
+        id_cena = cena_selecionada.get('id', 'CBERS_4A_WPM')
+        
+        ativos = cena_selecionada.get('assets', {})
+        url_thumbnail = ativos['thumbnail']['href']
+        
+        url_base_tiff = url_thumbnail.replace("/datastore/BROWSE/", "/api/download/TIFF/").replace("/BROWSE/", "/api/download/TIFF/").replace(".jpg", "").replace(".png", "")
+        if not url_base_tiff.endswith("_L4"):
+            url_base_tiff += "_L4"
+        
+        for banda in bandas:
+            url_download = f"{url_base_tiff}_{banda}.tif?email={email_inpe}"
+            caminho_arquivo = os.path.join(pasta_entrada_cbers, f"{id_cena}_{banda}.tif")
+            arquivos_originais[banda] = caminho_arquivo
+
+            if os.path.exists(caminho_arquivo) and os.path.getsize(caminho_arquivo) > 10000:
+                continue
+
+            sucesso = False
+            print(f"Baixando {banda} do INPE...")
+            for tentativa in range(1, 4):
+                try:
+                    resposta = requests.get(url_download, stream=True, timeout=120)
+                    resposta.raise_for_status()
+                    with open(caminho_arquivo, 'wb') as f:
+                        for chunk in resposta.iter_content(chunk_size=8192):
+                            if chunk: f.write(chunk)
+                    sucesso = True
+                    break
+                except requests.exceptions.RequestException:
+                    time.sleep(5)
+            
+            if not sucesso:
+                sys.exit(1)
+    else:
+        print("Todas as 5 bandas CBERS-4A já estão baixadas no Drive. Ignorando requisição à API do INPE.")
 
     print("Recortando as bandas de satélite para os limites geopolíticos da cidade...")
     arquivos_recortados = {}
@@ -378,7 +383,6 @@ def baixar_e_processar_cbers(code_muni, ano_fim, dados_json, projeto_root, gdf_m
     
     aplicar_pansharpening_em_blocos(arquivos_recortados['BAND0'], caminho_stack_8m, caminho_stack_2m)
     
-    # Executa a geração das composições também em blocos
     gerar_composicoes_zooniverse(caminho_stack_2m, pasta_saida_pansharpening, code_muni, ano_fim)
     return caminho_stack_2m
 
