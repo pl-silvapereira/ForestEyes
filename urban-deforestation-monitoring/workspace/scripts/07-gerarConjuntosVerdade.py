@@ -25,15 +25,15 @@ warnings.filterwarnings("ignore", message=".*One of the clusters is empty.*")
 warnings.filterwarnings("ignore", category=UserWarning, module="scipy")
 
 def gerar_estilo_qml_gt_u(caminho_qml):
-    """Gera QML para GT-U: Verde (Vegetação), Vermelho (Não-Vegetação), Azul (Indefinido), Preto (Mascara)."""
+    """Gera QML para GT-U: Verde (Floresta), Vermelho (Não Floresta), Azul (Indefinido), Preto (Não Segmentar)."""
     conteudo = """<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
 <qgis version="3.28.0" styleCategories="AllStyleCategories">
   <pipe>
     <rasterrenderer type="paletted" opacity="1" alphaBand="-1" band="1">
       <colorPalette>
-        <paletteEntry value="0" color="#000000" label="Mascara / Fora"/>
-        <paletteEntry value="1" color="#33a02c" label="Vegetacao (Verde)"/>
-        <paletteEntry value="2" color="#e31a1c" label="Nao-Vegetacao (Vermelho)"/>
+        <paletteEntry value="0" color="#000000" label="Nao Segmentar (Preto)"/>
+        <paletteEntry value="1" color="#33a02c" label="Floresta (Verde)"/>
+        <paletteEntry value="2" color="#e31a1c" label="Nao Floresta (Vermelho)"/>
         <paletteEntry value="3" color="#1f78b4" label="Indefinido (Azul)"/>
       </colorPalette>
     </rasterrenderer>
@@ -44,15 +44,15 @@ def gerar_estilo_qml_gt_u(caminho_qml):
         f.write(conteudo)
 
 def gerar_estilo_qml_gt_m(caminho_qml):
-    """Gera QML para GT-MapBiomas e GT-M: Verde (Vegetação), Vermelho (Não-Vegetação), Preto (Mascara)."""
+    """Gera QML para GT-MapBiomas e GT-M: Verde (Floresta), Vermelho (Não Floresta), Preto (Não Segmentar)."""
     conteudo = """<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
 <qgis version="3.28.0" styleCategories="AllStyleCategories">
   <pipe>
     <rasterrenderer type="paletted" opacity="1" alphaBand="-1" band="1">
       <colorPalette>
-        <paletteEntry value="0" color="#000000" label="Mascara / Fora"/>
-        <paletteEntry value="1" color="#33a02c" label="Vegetacao (Verde)"/>
-        <paletteEntry value="2" color="#e31a1c" label="Nao-Vegetacao (Vermelho)"/>
+        <paletteEntry value="0" color="#000000" label="Nao Segmentar (Preto)"/>
+        <paletteEntry value="1" color="#33a02c" label="Floresta (Verde)"/>
+        <paletteEntry value="2" color="#e31a1c" label="Nao Floresta (Vermelho)"/>
       </colorPalette>
     </rasterrenderer>
   </pipe>
@@ -89,6 +89,10 @@ def main():
     path_cbers_2m = os.path.join(dir_pan, f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif")
     path_shp_3classes = os.path.join(dir_seg, f"{code_muni}_Segmentacao_3Classes_{ano_fim}.shp")
     
+    if not os.path.exists(path_shp_3classes):
+        print(f"[ERRO CRÍTICO] Máscara de segmentação não encontrada: {path_shp_3classes}")
+        sys.exit(1)
+
     mb_files = [f for f in os.listdir(dir_input_mb) if f.endswith(f"_{ano_fim}.tif")] if os.path.exists(dir_input_mb) else []
     if not mb_files:
         print(f"[ERRO CRÍTICO] Raster do MapBiomas não encontrado em {dir_input_mb}")
@@ -96,7 +100,7 @@ def main():
     path_mapbiomas = os.path.join(dir_input_mb, mb_files[0])
 
     print("=" * 80, flush=True)
-    print(f"🎯 SCRIPT 07 - GERAÇÃO DOS CONJUNTOS VERDADE EM TILES ({ano_fim})", flush=True)
+    print(f"🎯 SCRIPT 07 - GERAÇÃO DOS CONJUNTOS VERDADE (COM MÁSCARA 3 CLASSES) ({ano_fim})", flush=True)
     print("=" * 80, flush=True)
 
     print("1. Lendo grade de referência espacial da cena CBERS-4A (2m)...", flush=True)
@@ -106,7 +110,17 @@ def main():
         cbers_transform = src_cbers.transform
         height, width = src_cbers.height, src_cbers.width
 
-    print("2. Gerando conjunto GT-MapBiomas (Binarização: 1=Vegetação, 2=Não-Vegetação)...", flush=True)
+    print(f"2. Carregando máscara de 3 classes: {os.path.basename(path_shp_3classes)}...", flush=True)
+    gdf_3classes = gpd.read_file(path_shp_3classes).to_crs(cbers_crs)
+    gdf_seg_domain = gdf_3classes[gdf_3classes['class_name'].isin(['Floresta', 'Nao_Floresta'])]
+    
+    # Domínio de segmentação: 1 onde for 'Floresta' ou 'Nao_Floresta', 0 onde for 'Nao_Segmentar'
+    mask_seg_domain = rasterize(
+        [(geom, 1) for geom in gdf_seg_domain.geometry],
+        out_shape=(height, width), transform=cbers_transform, fill=0, dtype=np.uint8
+    )
+
+    print("3. Gerando conjunto GT-MapBiomas aplicando a máscara Nao_Segmentar...", flush=True)
     gt_mapbiomas_2m = np.zeros((height, width), dtype=np.uint8)
 
     with rasterio.open(path_mapbiomas) as src_mb:
@@ -124,21 +138,14 @@ def main():
         mask_veg = (mb_data_raw == 3) | (mb_data_raw == 4) | (mb_data_raw == 5) | (mb_data_raw == 49)
         mask_nonveg = (mb_data_raw > 0) & (~mask_veg)
         
-        gt_mapbiomas_2m[mask_veg] = 1
-        gt_mapbiomas_2m[mask_nonveg] = 2
+        # Atribui 1 (Floresta/Verde) ou 2 (Não Floresta/Vermelho) apenas onde mask_seg_domain == 1
+        gt_mapbiomas_2m[mask_veg & (mask_seg_domain == 1)] = 1
+        gt_mapbiomas_2m[mask_nonveg & (mask_seg_domain == 1)] = 2
+        
         del mb_data_raw, mask_veg, mask_nonveg
         gc.collect()
 
-    print("3. Rasterizando domínio das áreas 'Floresta' e 'Nao_Floresta'...", flush=True)
-    gdf_3classes = gpd.read_file(path_shp_3classes).to_crs(cbers_crs)
-    gdf_seg_areas = gdf_3classes[gdf_3classes['class_name'].isin(['Floresta', 'Nao_Floresta'])]
-    
-    mask_seg_domain = rasterize(
-        [(geom, 1) for geom in gdf_seg_areas.geometry],
-        out_shape=(height, width), transform=cbers_transform, fill=0, dtype=np.uint8
-    )
-
-    print("4. Executando SLIC e cálculo de HoR/GT-U/GT-M em blocos (Tiles 1024x1024)...", flush=True)
+    print("4. Executando SLIC e geração do GT-U e GT-M em blocos (Tiles 1024x1024)...", flush=True)
     gt_u = np.zeros((height, width), dtype=np.uint8)
     gt_m = np.zeros((height, width), dtype=np.uint8)
 
@@ -189,14 +196,14 @@ def main():
                             prop_nonveg = count_nonveg / safe_total
                             hor = np.maximum(prop_veg, prop_nonveg)
 
-                            # Regra GT-U (1=Veg, 2=Não-Veg, 3=Indefinido em Azul para HoR < 0.7)
+                            # Regra GT-U (1=Floresta/Verde, 2=Não Floresta/Vermelho, 3=Indefinido/Azul para HoR < 0.7)
                             gt_u_map = np.zeros(max_lbl + 1, dtype=np.uint8)
                             mask_active = count_total > 0
                             gt_u_map[mask_active & (hor < 0.7)] = 3
                             gt_u_map[mask_active & (hor >= 0.7) & (prop_veg >= 0.7)] = 1
                             gt_u_map[mask_active & (hor >= 0.7) & (prop_veg < 0.7)] = 2
 
-                            # Regra GT-M (1=Veg, 2=Não-Veg para HoR > 0.5)
+                            # Regra GT-M (1=Floresta/Verde, 2=Não Floresta/Vermelho para HoR > 0.5)
                             gt_m_map = np.zeros(max_lbl + 1, dtype=np.uint8)
                             gt_m_map[mask_active & (prop_veg > 0.5)] = 1
                             gt_m_map[mask_active & (prop_veg <= 0.5)] = 2
@@ -253,7 +260,7 @@ def main():
     axes[0, 0].set_title("(a) Recorte da cena orbital CBERS-4A WPM (2m RGB)", fontsize=11, fontweight='bold', pad=8)
     
     axes[0, 1].imshow(gt_mb_crop, cmap=cmap_m_mb, vmin=0, vmax=2)
-    axes[0, 1].set_title("(b) GT-MapBiomas (Binarizado: Vegetação vs Não-Vegetação)", fontsize=11, fontweight='bold', pad=8)
+    axes[0, 1].set_title("(b) GT-MapBiomas (Floresta vs Não Floresta)", fontsize=11, fontweight='bold', pad=8)
 
     axes[1, 0].imshow(gt_u_crop, cmap=cmap_u, vmin=0, vmax=3)
     axes[1, 0].set_title("(c) GT-U (Verdade com Indefinido - HoR < 0,7 em Azul)", fontsize=11, fontweight='bold', pad=8)
@@ -268,21 +275,22 @@ def main():
         ax.set_xticks([])
         ax.set_yticks([])
 
-    patch_veg = mpatches.Patch(color='#33a02c', label='Vegetação')
-    patch_nonveg = mpatches.Patch(color='#e31a1c', label='Não-Vegetação (Urbano/Solo Expsto)')
+    patch_veg = mpatches.Patch(color='#33a02c', label='Floresta')
+    patch_nonveg = mpatches.Patch(color='#e31a1c', label='Não Floresta')
     patch_undef = mpatches.Patch(color='#1f78b4', label='Indefinido (HoR < 0,7)')
+    patch_noseg = mpatches.Patch(color='#000000', label='Não Segmentar')
 
     fig.legend(
-        handles=[patch_veg, patch_nonveg, patch_undef],
+        handles=[patch_veg, patch_nonveg, patch_undef, patch_noseg],
         loc='lower center', bbox_to_anchor=(0.5, 0.02),
-        ncol=3, frameon=True, facecolor='white', edgecolor='black', fontsize=10
+        ncol=4, frameon=True, facecolor='white', edgecolor='black', fontsize=10
     )
 
     path_figura8 = os.path.join(dir_reports, f"Figura_8_Conjuntos_Verdade_{code_muni}_{ano_fim}.png")
     plt.savefig(path_figura8, bbox_inches='tight', pad_inches=0.2)
     plt.close()
 
-    print(f"\n✅ SUCESSO! Conjuntos verdade concluídos:")
+    print(f"\n✅ SUCESSO! Conjuntos verdade concluídos com verificação da máscara de 3 classes:")
     print(f"   -> Imagem da Figura 8: {path_figura8}")
     print(f"   -> Raster GT-MapBiomas: {path_gt_mb}")
     print(f"   -> Raster GT-U: {path_gt_u}")
@@ -290,3 +298,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
