@@ -1,5 +1,7 @@
 import sys
 import os
+import gc
+import warnings
 import duckdb
 
 # Correção de compatibilidade entre DuckDB e geobr no Python 3.13
@@ -10,6 +12,7 @@ import numpy as np
 import geopandas as gpd
 import pandas as pd
 import rasterio
+from rasterio.windows import Window
 from rasterio.features import rasterize
 from rasterio.warp import reproject, Resampling
 from skimage.segmentation import slic
@@ -17,6 +20,9 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 import matplotlib.patches as mpatches
 from dotenv import load_dotenv
+
+warnings.filterwarnings("ignore", message=".*One of the clusters is empty.*")
+warnings.filterwarnings("ignore", category=UserWarning, module="scipy")
 
 def gerar_estilo_qml_gt_u(caminho_qml):
     """Gera QML para GT-U: Verde (Vegetação), Vermelho (Não-Vegetação), Azul (Indefinido), Preto (Mascara)."""
@@ -89,20 +95,17 @@ def main():
         sys.exit(1)
     path_mapbiomas = os.path.join(dir_input_mb, mb_files[0])
 
-    print("=" * 80)
-    print(f"🎯 SCRIPT 07 - GERAÇÃO DOS CONJUNTOS VERDADE (VETORIZADO HORT/GT) ({ano_fim})")
-    print("=" * 80)
+    print("=" * 80, flush=True)
+    print(f"🎯 SCRIPT 07 - GERAÇÃO DOS CONJUNTOS VERDADE EM TILES ({ano_fim})", flush=True)
+    print("=" * 80, flush=True)
 
-    # 1. Carregar grade de referência CBERS 2m
     print("1. Lendo grade de referência espacial da cena CBERS-4A (2m)...", flush=True)
     with rasterio.open(path_cbers_2m) as src_cbers:
         meta_cbers = src_cbers.meta.copy()
         cbers_crs = src_cbers.crs
         cbers_transform = src_cbers.transform
         height, width = src_cbers.height, src_cbers.width
-        rgb_raw = src_cbers.read([1, 2, 3])
 
-    # 2. Binarizar MapBiomas (GT-MapBiomas)
     print("2. Gerando conjunto GT-MapBiomas (Binarização: 1=Vegetação, 2=Não-Vegetação)...", flush=True)
     gt_mapbiomas_2m = np.zeros((height, width), dtype=np.uint8)
 
@@ -123,9 +126,10 @@ def main():
         
         gt_mapbiomas_2m[mask_veg] = 1
         gt_mapbiomas_2m[mask_nonveg] = 2
+        del mb_data_raw, mask_veg, mask_nonveg
+        gc.collect()
 
-    # 3. Gerar Superpixels via MaskSLIC
-    print("3. Executando MaskSLIC sobre áreas 'Floresta' e 'Nao_Floresta'...", flush=True)
+    print("3. Rasterizando domínio das áreas 'Floresta' e 'Nao_Floresta'...", flush=True)
     gdf_3classes = gpd.read_file(path_shp_3classes).to_crs(cbers_crs)
     gdf_seg_areas = gdf_3classes[gdf_3classes['class_name'].isin(['Floresta', 'Nao_Floresta'])]
     
@@ -134,59 +138,76 @@ def main():
         out_shape=(height, width), transform=cbers_transform, fill=0, dtype=np.uint8
     )
 
-    rgb_norm = np.moveaxis(rgb_raw, 0, -1).astype(np.float32)
-    max_val = rgb_norm.max()
-    if max_val > 0: 
-        rgb_norm /= max_val
+    print("4. Executando SLIC e cálculo de HoR/GT-U/GT-M em blocos (Tiles 1024x1024)...", flush=True)
+    gt_u = np.zeros((height, width), dtype=np.uint8)
+    gt_m = np.zeros((height, width), dtype=np.uint8)
 
-    num_segments = max(int(np.sum(mask_seg_domain) / 250.0), 10)
-    
-    superpixels = slic(
-        rgb_norm, n_segments=num_segments, compactness=10,
-        mask=(mask_seg_domain == 1), start_label=1, max_num_iter=5
-    )
+    tile_size = 1024
+    total_blocos = int(np.ceil(height / tile_size)) * int(np.ceil(width / tile_size))
+    bloco_atual = 0
 
-    # 4. Cálculo Vetorizado da Taxa de Homogeneidade (HoR), GT-U e GT-M (Sem Laço For)
-    print("4. Calculando HoR, GT-U (HoR >= 0.7) e GT-M (HoR > 0.5) via histograma vetorizado...", flush=True)
-    sp_flat = superpixels.ravel()
-    gt_flat = gt_mapbiomas_2m.ravel()
+    qps = 250.0  # Pixels por superpixel alvo
 
-    valid = sp_flat > 0
-    sp_v = sp_flat[valid]
-    gt_v = gt_flat[valid]
+    with rasterio.open(path_cbers_2m) as src_cbers:
+        for y in range(0, height, tile_size):
+            for x in range(0, width, tile_size):
+                bloco_atual += 1
+                h_win = min(tile_size, height - y)
+                w_win = min(tile_size, width - x)
+                window = Window(x, y, w_win, h_win)
 
-    max_lbl = int(sp_v.max()) if len(sp_v) > 0 else 0
+                mask_tile = mask_seg_domain[y:y+h_win, x:x+w_win]
+                qtp_tile = np.sum(mask_tile)
 
-    if max_lbl > 0:
-        count_veg = np.bincount(sp_v[gt_v == 1], minlength=max_lbl + 1)
-        count_nonveg = np.bincount(sp_v[gt_v == 2], minlength=max_lbl + 1)
-        count_total = np.bincount(sp_v, minlength=max_lbl + 1)
+                if qtp_tile > 0:
+                    qts_tile = int(qtp_tile / qps)
+                    if qts_tile > 0:
+                        rgb_tile = src_cbers.read([1, 2, 3], window=window)
+                        rgb_ch_last = np.moveaxis(rgb_tile, 0, -1).astype(np.float32)
+                        tile_max = rgb_ch_last.max()
+                        if tile_max > 0:
+                            rgb_ch_last /= tile_max
 
-        safe_total = np.where(count_total == 0, 1, count_total)
-        prop_veg = count_veg / safe_total
-        prop_nonveg = count_nonveg / safe_total
-        hor = np.maximum(prop_veg, prop_nonveg)
+                        seg_tile = slic(
+                            rgb_ch_last, n_segments=qts_tile, compactness=10,
+                            mask=(mask_tile == 1), start_label=1, max_num_iter=5
+                        )
 
-        # Vetorização das Regras GT-U (1=Veg, 2=Não-Veg, 3=Indefinido)
-        gt_u_map = np.zeros(max_lbl + 1, dtype=np.uint8)
-        mask_active = count_total > 0
-        gt_u_map[mask_active & (hor < 0.7)] = 3
-        gt_u_map[mask_active & (hor >= 0.7) & (prop_veg >= 0.7)] = 1
-        gt_u_map[mask_active & (hor >= 0.7) & (prop_veg < 0.7)] = 2
+                        gt_mb_tile = gt_mapbiomas_2m[y:y+h_win, x:x+w_win]
 
-        # Vetorização das Regras GT-M (1=Veg, 2=Não-Veg)
-        gt_m_map = np.zeros(max_lbl + 1, dtype=np.uint8)
-        gt_m_map[mask_active & (prop_veg > 0.5)] = 1
-        gt_m_map[mask_active & (prop_veg <= 0.5)] = 2
+                        sp_v = seg_tile[seg_tile > 0]
+                        gt_v = gt_mb_tile[seg_tile > 0]
+                        max_lbl = seg_tile.max()
 
-        gt_u = gt_u_map[superpixels]
-        gt_m = gt_m_map[superpixels]
-    else:
-        gt_u = np.zeros((height, width), dtype=np.uint8)
-        gt_m = np.zeros((height, width), dtype=np.uint8)
+                        if max_lbl > 0 and len(sp_v) > 0:
+                            count_veg = np.bincount(sp_v[gt_v == 1], minlength=max_lbl + 1)
+                            count_nonveg = np.bincount(sp_v[gt_v == 2], minlength=max_lbl + 1)
+                            count_total = np.bincount(sp_v, minlength=max_lbl + 1)
 
-    # 5. Salvar Rasters GeoTIFF e QML
-    print("5. Gravando rasters e estilos QML no disco...", flush=True)
+                            safe_total = np.where(count_total == 0, 1, count_total)
+                            prop_veg = count_veg / safe_total
+                            prop_nonveg = count_nonveg / safe_total
+                            hor = np.maximum(prop_veg, prop_nonveg)
+
+                            # Regra GT-U (1=Veg, 2=Não-Veg, 3=Indefinido em Azul para HoR < 0.7)
+                            gt_u_map = np.zeros(max_lbl + 1, dtype=np.uint8)
+                            mask_active = count_total > 0
+                            gt_u_map[mask_active & (hor < 0.7)] = 3
+                            gt_u_map[mask_active & (hor >= 0.7) & (prop_veg >= 0.7)] = 1
+                            gt_u_map[mask_active & (hor >= 0.7) & (prop_veg < 0.7)] = 2
+
+                            # Regra GT-M (1=Veg, 2=Não-Veg para HoR > 0.5)
+                            gt_m_map = np.zeros(max_lbl + 1, dtype=np.uint8)
+                            gt_m_map[mask_active & (prop_veg > 0.5)] = 1
+                            gt_m_map[mask_active & (prop_veg <= 0.5)] = 2
+
+                            gt_u[y:y+h_win, x:x+w_win] = gt_u_map[seg_tile]
+                            gt_m[y:y+h_win, x:x+w_win] = gt_m_map[seg_tile]
+
+                if bloco_atual % 20 == 0 or bloco_atual == total_blocos:
+                    print(f"  ⏩ Processando blocos: [{bloco_atual}/{total_blocos}]", flush=True)
+
+    print("5. Gravando rasters dos Conjuntos Verdade e estilos QML no disco...", flush=True)
     meta_out = meta_cbers.copy()
     meta_out.update(count=1, dtype=rasterio.uint8, nodata=0)
 
@@ -202,8 +223,7 @@ def main():
     gerar_estilo_qml_gt_u(os.path.join(dir_gt_out, f"{code_muni}_GT_U_{ano_fim}.qml"))
     gerar_estilo_qml_gt_m(os.path.join(dir_gt_out, f"{code_muni}_GT_M_{ano_fim}.qml"))
 
-    # 6. Gerar Figura 8 (4 Painéis ABNT)
-    print("6. Gerando painel comparativo da Figura 8...", flush=True)
+    print("6. Gerando painel comparativo da Figura 8 (ABNT)...", flush=True)
     center_y, center_x = height // 2, width // 2
     crop_h, crop_w = min(1200, height), min(2400, width)
     
@@ -212,7 +232,10 @@ def main():
     x1 = max(0, center_x - crop_w // 2)
     x2 = min(width, x1 + crop_w)
 
-    rgb_crop = np.moveaxis(rgb_raw[:, y1:y2, x1:x2], 0, -1).astype(np.float32)
+    with rasterio.open(path_cbers_2m) as src_cbers:
+        rgb_raw_crop = src_cbers.read([1, 2, 3], window=Window(x1, y1, crop_w, crop_h))
+
+    rgb_crop = np.moveaxis(rgb_raw_crop, 0, -1).astype(np.float32)
     p2, p98 = np.percentile(rgb_crop[rgb_crop > 0], (2, 98))
     rgb_crop = np.clip((rgb_crop - p2) / (p98 - p2), 0, 1)
 
@@ -259,7 +282,7 @@ def main():
     plt.savefig(path_figura8, bbox_inches='tight', pad_inches=0.2)
     plt.close()
 
-    print(f"\n✅ SUCESSO! Conjuntos verdade concluídos em instantes:")
+    print(f"\n✅ SUCESSO! Conjuntos verdade concluídos:")
     print(f"   -> Imagem da Figura 8: {path_figura8}")
     print(f"   -> Raster GT-MapBiomas: {path_gt_mb}")
     print(f"   -> Raster GT-U: {path_gt_u}")
