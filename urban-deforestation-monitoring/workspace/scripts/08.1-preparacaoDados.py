@@ -9,9 +9,25 @@ if not hasattr(duckdb.DuckDBPyRelation, "fetchone"):
 
 import numpy as np
 import rasterio
-from PIL import Image
+from rasterio.windows import Window
 import cv2
+from PIL import Image
 from dotenv import load_dotenv
+
+def calcular_percentis_banda(src, band_idx, decimation=10):
+    """Calcula p2 e p98 da banda em milissegundos via amostragem rápida por decimação."""
+    out_shape = (1, max(1, src.height // decimation), max(1, src.width // decimation))
+    amostra = src.read(band_idx, out_shape=out_shape).astype(np.float32)
+    validos = amostra[amostra > 0]
+    if len(validos) > 0:
+        p2, p98 = np.percentile(validos, (2, 98))
+    else:
+        p2, p98 = 0, 1
+    if p98 == p2:
+        p98 = p2 + 1
+    del amostra, validos
+    gc.collect()
+    return float(p2), float(p98)
 
 def main():
     if len(sys.argv) < 4:
@@ -29,7 +45,7 @@ def main():
         diretorio_scripts = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(diretorio_scripts)
 
-    # 1. Criação da estrutura de pastas em data/processing
+    # 1. Estrutura de pastas em data/processing
     dir_processing = os.path.join(project_root, "data", "processing")
     dir_proc_rgb = os.path.join(dir_processing, "rgb")
     dir_proc_ndvi = os.path.join(dir_processing, "ndvi")
@@ -39,7 +55,6 @@ def main():
     for folder in [dir_proc_rgb, dir_proc_ndvi, dir_proc_masks_png, dir_proc_masks_npy]:
         os.makedirs(folder, exist_ok=True)
 
-    # Diretórios de entrada das etapas anteriores
     dir_pan = os.path.join(project_root, "data", "output", "pansharpening", ano_fim)
     dir_gt = os.path.join(project_root, "data", "output", "ground_truth", ano_fim)
 
@@ -52,55 +67,72 @@ def main():
         print(f"[ERRO CRÍTICO] Imagem CBERS-4A 2m não encontrada: {path_cbers_2m}")
         sys.exit(1)
 
-    print("=" * 80)
-    print(f"🚀 SCRIPT 08.1 - PREPARAÇÃO DE COMPOSIÇÕES, NDVI E MÁSCARAS NPY/PNG ({ano_fim})")
-    print("=" * 80)
+    print("=" * 80, flush=True)
+    print(f"🚀 SCRIPT 08.1 - PREPARAÇÃO OTIMIZADA EM TILES ({ano_fim})", flush=True)
+    print("=" * 80, flush=True)
 
-    # 2. Leitura da imagem CBERS-4A 2m (B1=Red, B2=Green, B3=Blue, B4=NIR)
-    print("1. Carregando bandas espectrais do CBERS-4A WPM (2m)...")
     with rasterio.open(path_cbers_2m) as src:
-        red = src.read(1).astype(np.float32)
-        green = src.read(2).astype(np.float32)
-        blue = src.read(3).astype(np.float32)
-        nir = src.read(4).astype(np.float32) if src.count >= 4 else None
-        
         height, width = src.height, src.width
+        num_bands = src.count
 
-    # 3. Geração da Composição RGB (Cor Natural em 8 bits)
-    print("2. Gerando composição RGB de alta resolução...")
-    def normalizar_8bit(banda):
-        p2, p98 = np.percentile(banda[banda > 0], (2, 98)) if np.any(banda > 0) else (0, 1)
-        if p98 == p2: p98 = p2 + 1
-        return np.clip((banda - p2) / (p98 - p2) * 255.0, 0, 255).astype(np.uint8)
+        print("1. Calculando estatísticas radiométricas (p2/p98)...", flush=True)
+        p2_r, p98_r = calcular_percentis_banda(src, 1)
+        p2_g, p98_g = calcular_percentis_banda(src, 2)
+        p2_b, p98_b = calcular_percentis_banda(src, 3)
 
-    r_norm = normalizar_8bit(red)
-    g_norm = normalizar_8bit(green)
-    b_norm = normalizar_8bit(blue)
-
-    rgb_composite = np.dstack((r_norm, g_norm, b_norm))
-    output_rgb_path = os.path.join(dir_proc_rgb, f"{code_muni}_rgb_{ano_fim}.png")
-    
-    img_rgb = Image.fromarray(rgb_composite)
-    img_rgb.save(output_rgb_path)
-    print(f"   -> Composição RGB salva em: {output_rgb_path}")
-
-    # 4. Geração do NDVI (Normalized Difference Vegetation Index)
-    if nir is not None:
-        print("3. Calculando NDVI e normalizando para 8 bits (0-255)...")
-        denom = nir + red
-        denom[denom == 0] = 1e-6
-        ndvi = (nir - red) / denom
+        # 2. Gerar Composição RGB em Tiles (uint8 direto)
+        print("2. Processando composição RGB em blocos...", flush=True)
+        rgb_composite = np.zeros((height, width, 3), dtype=np.uint8)
         
-        # Mapeamento do intervalo [-1.0, 1.0] para [0, 255]
-        ndvi_scaled = np.interp(ndvi, (-1.0, 1.0), (0, 255)).astype(np.uint8)
-        
-        output_ndvi_path = os.path.join(dir_proc_ndvi, f"{code_muni}_ndvi_{ano_fim}.png")
-        img_ndvi = Image.fromarray(ndvi_scaled)
-        img_ndvi.save(output_ndvi_path)
-        print(f"   -> NDVI salvo em: {output_ndvi_path}")
+        tile_size = 2048
+        for y in range(0, height, tile_size):
+            for x in range(0, width, tile_size):
+                h_win = min(tile_size, height - y)
+                w_win = min(tile_size, width - x)
+                win = Window(x, y, w_win, h_win)
 
-    # 5. Exportação das Máscaras de Verdade Terrestre (PNG e NPY)
-    print("4. Convertendo conjuntos verdade (GT-MapBiomas, GT-U, GT-M) para .png e .npy...")
+                r_tile = src.read(1, window=win).astype(np.float32)
+                g_tile = src.read(2, window=win).astype(np.float32)
+                b_tile = src.read(3, window=win).astype(np.float32)
+
+                rgb_composite[y:y+h_win, x:x+w_win, 0] = np.clip((r_tile - p2_r) / (p98_r - p2_r) * 255.0, 0, 255).astype(np.uint8)
+                rgb_composite[y:y+h_win, x:x+w_win, 1] = np.clip((g_tile - p2_g) / (p98_g - p2_g) * 255.0, 0, 255).astype(np.uint8)
+                rgb_composite[y:y+h_win, x:x+w_win, 2] = np.clip((b_tile - p2_b) / (p98_b - p2_b) * 255.0, 0, 255).astype(np.uint8)
+
+        output_rgb_path = os.path.join(dir_proc_rgb, f"{code_muni}_rgb_{ano_fim}.png")
+        cv2.imwrite(output_rgb_path, cv2.cvtColor(rgb_composite, cv2.COLOR_RGB2BGR))
+        print(f"   -> Composição RGB salva em: {output_rgb_path}", flush=True)
+        del rgb_composite
+        gc.collect()
+
+        # 3. Gerar NDVI em Tiles
+        if num_bands >= 4:
+            print("3. Calculando NDVI em blocos...", flush=True)
+            ndvi_scaled = np.zeros((height, width), dtype=np.uint8)
+
+            for y in range(0, height, tile_size):
+                for x in range(0, width, tile_size):
+                    h_win = min(tile_size, height - y)
+                    w_win = min(tile_size, width - x)
+                    win = Window(x, y, w_win, h_win)
+
+                    r_tile = src.read(1, window=win).astype(np.float32)
+                    nir_tile = src.read(4, window=win).astype(np.float32)
+
+                    denom = nir_tile + r_tile
+                    denom[denom == 0] = 1e-6
+                    ndvi_tile = (nir_tile - r_tile) / denom
+
+                    ndvi_scaled[y:y+h_win, x:x+w_win] = np.interp(ndvi_tile, (-1.0, 1.0), (0, 255)).astype(np.uint8)
+
+            output_ndvi_path = os.path.join(dir_proc_ndvi, f"{code_muni}_ndvi_{ano_fim}.png")
+            cv2.imwrite(output_ndvi_path, ndvi_scaled)
+            print(f"   -> NDVI salvo em: {output_ndvi_path}", flush=True)
+            del ndvi_scaled
+            gc.collect()
+
+    # 4. Exportação das Máscaras (PNG e NPY)
+    print("4. Salvando conjuntos verdade em .png e .npy em data/processing/...", flush=True)
     gt_dict = {
         'GT_MapBiomas': path_gt_mb,
         'GT_U': path_gt_u,
@@ -112,17 +144,17 @@ def main():
             with rasterio.open(path_gt) as src_gt:
                 mask_data = src_gt.read(1).astype(np.uint8)
                 
-                # Salva em .npy
                 out_npy = os.path.join(dir_proc_masks_npy, f"{code_muni}_{name_gt}_{ano_fim}.npy")
                 np.save(out_npy, mask_data)
                 
-                # Salva em .png
                 out_png = os.path.join(dir_proc_masks_png, f"{code_muni}_{name_gt}_{ano_fim}.png")
                 cv2.imwrite(out_png, mask_data)
                 
-                print(f"   -> {name_gt}: Salvo NPY ({out_npy}) e PNG ({out_png})")
+                print(f"   -> {name_gt}: Salvo NPY ({out_npy}) e PNG ({out_png})", flush=True)
+                del mask_data
+                gc.collect()
 
-    print("\n✅ SUCESSO! Script 08.1 concluído. Dados preparados em data/processing/")
+    print("\n✅ SUCESSO! Script 08.1 concluído sem estourar RAM.")
 
 if __name__ == "__main__":
     main()
