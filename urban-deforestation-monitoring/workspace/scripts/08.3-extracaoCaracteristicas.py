@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 ==============================================================================
-Etapa 08.3: Extração de Características e Rotulagem (Alta Performance & Memória Eficiente)
+Etapa 08.3: Extração de Características e Rotulagem (Processamento em Blocos)
 ==============================================================================
 """
 
@@ -67,7 +67,7 @@ def main():
         sys.exit(1)
 
     print("=" * 80, flush=True)
-    print(f"🚀 SCRIPT 08.3 - EXTRAÇÃO DE CARACTERÍSTICAS (OTIMIZADO & MEMÓRIA) ({ano_fim})", flush=True)
+    print(f"🚀 SCRIPT 08.3 - EXTRAÇÃO DE CARACTERÍSTICAS (PROCESSAMENTO EM BLOCOS) ({ano_fim})", flush=True)
     print("=" * 80, flush=True)
 
     print("1. Carregando matrizes na memória...", flush=True)
@@ -83,91 +83,107 @@ def main():
     img_slic = np.load(path_slic)
     truth_mask = np.load(path_mask_gt)
 
-    # Achatar matrizes para vetores 1D
-    flat_labels = img_slic.ravel()
-    unique_labels = np.unique(flat_labels[flat_labels > 0])
+    height, width = img_slic.shape[:2]
+    max_sp = int(img_slic.max())
+
+    unique_labels = np.unique(img_slic[img_slic > 0])
     num_superpixels = len(unique_labels)
 
-    print(f"2. Processando estatísticas de {num_superpixels:,} superpíxeis...", flush=True)
+    print(f"2. Processando {num_superpixels:,} superpíxeis em blocos de linhas...", flush=True)
 
-    # Contagem de pixels por rótulo de superpíxel
-    pixel_counts = np.bincount(flat_labels)
+    # Tamanho do bloco (1.000 linhas por vez)
+    block_size = 1000
+    num_blocks = int(np.ceil(height / block_size))
+
+    num_channels = rgb_img.shape[2] if rgb_img.ndim == 3 else 1
+    pixel_counts = np.zeros(max_sp + 1, dtype=np.int64)
+    sum_ch = np.zeros((num_channels, max_sp + 1), dtype=np.float64)
+    sum_sq_ch = np.zeros((num_channels, max_sp + 1), dtype=np.float64)
+
+    pair_counts_dict = {}
+
+    gt_min_val = int(truth_mask.min())
+    gt_offset = -gt_min_val if gt_min_val < 0 else 0
+
+    # Iteração em blocos
+    for b in range(num_blocks):
+        r_start = b * block_size
+        r_end = min((b + 1) * block_size, height)
+
+        sub_slic = img_slic[r_start:r_end, :].ravel()
+        valid = sub_slic > 0
+        if not np.any(valid):
+            continue
+
+        sub_slic_valid = sub_slic[valid]
+
+        # Contagem de pixels
+        pixel_counts += np.bincount(sub_slic_valid, minlength=max_sp + 1)
+
+        # Estatísticas espectrais por canal
+        sub_rgb = rgb_img[r_start:r_end, :, :]
+        for c in range(num_channels):
+            ch_vals = sub_rgb[:, :, c].ravel()[valid].astype(np.float64) if num_channels > 1 else sub_rgb.ravel()[valid].astype(np.float64)
+            sum_ch[c] += np.bincount(sub_slic_valid, weights=ch_vals, minlength=max_sp + 1)
+            sum_sq_ch[c] += np.bincount(sub_slic_valid, weights=ch_vals ** 2, minlength=max_sp + 1)
+
+        # Votação majoritária do Ground Truth
+        sub_gt = truth_mask[r_start:r_end, :].ravel()[valid].astype(np.int64) + gt_offset
+        pair_code = (sub_slic_valid.astype(np.int64) << 32) | sub_gt
+        unq_codes, cnts = np.unique(pair_code, return_counts=True)
+
+        for code, count in zip(unq_codes, cnts):
+            pair_counts_dict[code] = pair_counts_dict.get(code, 0) + count
+
+        pct = int(((b + 1) / num_blocks) * 100)
+        print(f"   -> [Bloco {b+1}/{num_blocks}] ({pct}%) processado com sucesso.", flush=True)
+
+    # Liberação das matrizes da memória
+    del rgb_img, truth_mask
+    gc.collect()
+
+    print("3. Calculando médias, desvios padrão e classes majoritárias...", flush=True)
     counts_safe = np.maximum(1, pixel_counts[unique_labels])
 
     dataset = {'sp_id': unique_labels}
-    num_channels = rgb_img.shape[2] if rgb_img.ndim == 3 else 1
 
-    # Cálculo banda a banda com limpeza de RAM imediata
     for c in range(num_channels):
-        print(f"   -> [Canal {c+1}/{num_channels}] Calculando Média e Desvio Padrão...", flush=True)
-        
-        channel_flat = rgb_img[:, :, c].ravel().astype(np.float64) if num_channels > 1 else rgb_img.ravel().astype(np.float64)
-
-        # 1. Média
-        sum_ch = np.bincount(flat_labels, weights=channel_flat)
-        mean_val = sum_ch[unique_labels] / counts_safe
-        del sum_ch
-
-        # 2. Desvio Padrão via np.square (sem duplicar vetores grandes)
-        sq_channel = np.square(channel_flat)
-        del channel_flat
-        
-        sum_sq_ch = np.bincount(flat_labels, weights=sq_channel)
-        del sq_channel
-
-        mean_sq = sum_sq_ch[unique_labels] / counts_safe
-        del sum_sq_ch
+        mean_val = sum_ch[c][unique_labels] / counts_safe
+        mean_sq = sum_sq_ch[c][unique_labels] / counts_safe
 
         var_val = np.maximum(0.0, mean_sq - (mean_val ** 2))
         std_val = np.sqrt(var_val)
 
         dataset[f'mean_ch{c+1}'] = mean_val
         dataset[f'std_ch{c+1}'] = std_val
-        
-        gc.collect()
 
-    # Libera a imagem RGB da RAM pois não é mais necessária
-    del rgb_img
-    gc.collect()
+    # Reconstrução da matriz para votação de classe
+    if pair_counts_dict:
+        codes = np.array(list(pair_counts_dict.keys()), dtype=np.int64)
+        counts = np.array(list(pair_counts_dict.values()), dtype=np.int32)
 
-    print("3. Executando votação majoritária de classes (Ground Truth)...", flush=True)
-    gt_flat = truth_mask.ravel()
-    del truth_mask
+        sp_ids = codes >> 32
+        gt_shifted = codes & 0xFFFFFFFF
+        max_gt_shifted = int(gt_shifted.max())
 
-    valid_idx = flat_labels > 0
-    mask_valid = flat_labels[valid_idx]
-    gt_valid = gt_flat[valid_idx].astype(np.int64)
-    del flat_labels, gt_flat
-    gc.collect()
+        counts_matrix = coo_matrix(
+            (counts, (sp_ids, gt_shifted)),
+            shape=(max_sp + 1, max_gt_shifted + 1)
+        ).tocsr()
 
-    gt_min = int(gt_valid.min())
-    if gt_min < 0:
-        gt_valid -= gt_min
-
-    max_sp = int(unique_labels.max())
-    max_gt = int(gt_valid.max())
-
-    counts_matrix = coo_matrix(
-        (np.ones_like(mask_valid, dtype=np.int32), (mask_valid, gt_valid)),
-        shape=(max_sp + 1, max_gt + 1)
-    ).tocsr()
-
-    del mask_valid, gt_valid
-    gc.collect()
-
-    majority_classes = counts_matrix.argmax(axis=1).A1[unique_labels]
-
-    if gt_min < 0:
-        majority_classes += gt_min
+        majority_shifted = counts_matrix.argmax(axis=1).A1[unique_labels]
+        majority_classes = majority_shifted - gt_offset
+    else:
+        majority_classes = np.zeros(len(unique_labels), dtype=int)
 
     dataset['target_class'] = majority_classes
 
-    # Salva a tabela final em CSV
-    print("4. Salvando tabela de características no disco...", flush=True)
+    # Salvamento do CSV
+    print("4. Salvando arquivo CSV final...", flush=True)
     df_features = pd.DataFrame(dataset)
     df_features.to_csv(output_csv, index=False)
 
-    print(f"\n✅ SUCESSO! Script 08.3 concluído com êxito.")
+    print(f"\n✅ SUCESSO! Script 08.3 concluído.")
     print(f" -> Tabela salva em: {output_csv}")
     print(f" -> Total de superpíxeis extraídos: {len(df_features):,}")
     print(df_features.head())
