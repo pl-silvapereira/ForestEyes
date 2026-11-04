@@ -2,12 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 ==============================================================================
-Etapa 08.3: Extração de Características e Rotulagem (Ultra-Otimizado)
+Etapa 08.3: Extração de Características e Rotulagem (Alta Performance & Memória Eficiente)
 ==============================================================================
 """
 
 import sys
 import os
+import gc
 import warnings
 import duckdb
 
@@ -66,16 +67,19 @@ def main():
         sys.exit(1)
 
     print("=" * 80, flush=True)
-    print(f"🚀 SCRIPT 08.3 - EXTRAÇÃO DE CARACTERÍSTICAS (ULTRA-OTIMIZADO) ({ano_fim})", flush=True)
+    print(f"🚀 SCRIPT 08.3 - EXTRAÇÃO DE CARACTERÍSTICAS (OTIMIZADO & MEMÓRIA) ({ano_fim})", flush=True)
     print("=" * 80, flush=True)
 
-    print("1. Carregando dados na memória...", flush=True)
+    print("1. Carregando matrizes na memória...", flush=True)
     bgr_img = cv2.imread(path_rgb)
     if bgr_img is None:
         print(f"❌ [ERRO CRÍTICO] Falha ao ler imagem RGB: {path_rgb}")
         sys.exit(1)
 
     rgb_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB)
+    del bgr_img
+    gc.collect()
+
     img_slic = np.load(path_slic)
     truth_mask = np.load(path_mask_gt)
 
@@ -84,40 +88,57 @@ def main():
     unique_labels = np.unique(flat_labels[flat_labels > 0])
     num_superpixels = len(unique_labels)
 
-    print(f"2. Processando estatísticas de {num_superpixels:,} superpíxeis via np.bincount (C-level)...", flush=True)
+    print(f"2. Processando estatísticas de {num_superpixels:,} superpíxeis...", flush=True)
 
-    # Contagem de pixels por rótulo (tamanho max_label + 1)
+    # Contagem de pixels por rótulo de superpíxel
     pixel_counts = np.bincount(flat_labels)
-    # Evita divisão por zero
     counts_safe = np.maximum(1, pixel_counts[unique_labels])
 
     dataset = {'sp_id': unique_labels}
     num_channels = rgb_img.shape[2] if rgb_img.ndim == 3 else 1
 
-    # Cálculo ultraotimizado de Média e Desvio Padrão
+    # Cálculo banda a banda com limpeza de RAM imediata
     for c in range(num_channels):
+        print(f"   -> [Canal {c+1}/{num_channels}] Calculando Média e Desvio Padrão...", flush=True)
+        
         channel_flat = rgb_img[:, :, c].ravel().astype(np.float64) if num_channels > 1 else rgb_img.ravel().astype(np.float64)
 
-        # Soma das intensidades por superpíxel
+        # 1. Média
         sum_ch = np.bincount(flat_labels, weights=channel_flat)
-        # Soma dos quadrados por superpíxel
-        sum_sq_ch = np.bincount(flat_labels, weights=channel_flat ** 2)
-
         mean_val = sum_ch[unique_labels] / counts_safe
+        del sum_ch
+
+        # 2. Desvio Padrão via np.square (sem duplicar vetores grandes)
+        sq_channel = np.square(channel_flat)
+        del channel_flat
+        
+        sum_sq_ch = np.bincount(flat_labels, weights=sq_channel)
+        del sq_channel
+
         mean_sq = sum_sq_ch[unique_labels] / counts_safe
+        del sum_sq_ch
 
         var_val = np.maximum(0.0, mean_sq - (mean_val ** 2))
         std_val = np.sqrt(var_val)
 
         dataset[f'mean_ch{c+1}'] = mean_val
         dataset[f'std_ch{c+1}'] = std_val
+        
+        gc.collect()
 
-    print("3. Executando votação majoritária de classes via Matrizes Esparsas...", flush=True)
+    # Libera a imagem RGB da RAM pois não é mais necessária
+    del rgb_img
+    gc.collect()
+
+    print("3. Executando votação majoritária de classes (Ground Truth)...", flush=True)
     gt_flat = truth_mask.ravel()
+    del truth_mask
 
     valid_idx = flat_labels > 0
     mask_valid = flat_labels[valid_idx]
     gt_valid = gt_flat[valid_idx].astype(np.int64)
+    del flat_labels, gt_flat
+    gc.collect()
 
     gt_min = int(gt_valid.min())
     if gt_min < 0:
@@ -131,6 +152,9 @@ def main():
         shape=(max_sp + 1, max_gt + 1)
     ).tocsr()
 
+    del mask_valid, gt_valid
+    gc.collect()
+
     majority_classes = counts_matrix.argmax(axis=1).A1[unique_labels]
 
     if gt_min < 0:
@@ -138,11 +162,12 @@ def main():
 
     dataset['target_class'] = majority_classes
 
-    # Salva o arquivo CSV final
+    # Salva a tabela final em CSV
+    print("4. Salvando tabela de características no disco...", flush=True)
     df_features = pd.DataFrame(dataset)
     df_features.to_csv(output_csv, index=False)
 
-    print(f"\n✅ SUCESSO! Processamento concluído.")
+    print(f"\n✅ SUCESSO! Script 08.3 concluído com êxito.")
     print(f" -> Tabela salva em: {output_csv}")
     print(f" -> Total de superpíxeis extraídos: {len(df_features):,}")
     print(df_features.head())
