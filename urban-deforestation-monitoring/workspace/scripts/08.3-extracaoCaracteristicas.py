@@ -4,118 +4,121 @@
 ==============================================================================
 Etapa 08.3: Extração de Características e Rotulagem de Superpíxeis
 ==============================================================================
-Descrição:
-  - Carrega a imagem original, o mapa de superpíxeis (SLIC) e o ground truth.
-  - Extrai métricas estatísticas espectrais (média e desvio padrão por canal).
-  - Determina a classe majoritária de cada superpíxel com base na máscara.
-  - Exporta o conjunto de dados tabular resultante no formato CSV.
-==============================================================================
 """
 
-import os
 import sys
+import os
+import gc
+import warnings
+import duckdb
+
+# Compatibilidade DuckDB e geobr no Python 3.13
+if not hasattr(duckdb.DuckDBPyRelation, "fetchone"):
+    duckdb.DuckDBPyRelation.fetchone = lambda self: self.fetchall()[0]
+
 import numpy as np
+import cv2
 import pandas as pd
 from scipy import ndimage
-from PIL import Image
+from dotenv import load_dotenv
 
-# ------------------------------------------------------------------------------
-# 1. Configuração de Caminhos (Ajuste conforme a estrutura do projeto)
-# ------------------------------------------------------------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "..", "data")
+warnings.filterwarnings("ignore", category=UserWarning)
 
-PATH_IMG = os.path.join(DATA_DIR, "processed", "imagem_entrada.npy")       # Imagem original (RGB / Multiespectral)
-PATH_SLIC = os.path.join(DATA_DIR, "processed", "superpixels_slic.npy")    # Matriz img_slic gerada no 08.2
-PATH_MASK = os.path.join(DATA_DIR, "processed", "mascara_groundtruth.npy") # Máscara de referência/rótulos
-PATH_OUTPUT_CSV = os.path.join(DATA_DIR, "output", "features_superpixels.csv")
+def main():
+    if len(sys.argv) < 4:
+        print("❌ Erro: Parâmetros insuficientes.")
+        print("Uso correto: python 08.3-extracaoCaracteristicas.py <code_muni> <ano_inicio> <ano_fim>")
+        sys.exit(1)
 
+    code_muni = str(sys.argv[1])
+    ano_inicio = str(sys.argv[2])
+    ano_fim = str(sys.argv[3])
 
-def carregar_dados():
-    """Carrega a imagem, a matriz de superpíxeis e a máscara de ground truth."""
-    if not os.path.exists(PATH_SLIC):
-        raise FileNotFoundError(f"Arquivo de superpíxeis não encontrado: {PATH_SLIC}")
-    if not os.path.exists(PATH_IMG):
-        raise FileNotFoundError(f"Arquivo de imagem não encontrado: {PATH_IMG}")
-    if not os.path.exists(PATH_MASK):
-        raise FileNotFoundError(f"Arquivo de máscara não encontrado: {PATH_MASK}")
+    load_dotenv()
+    project_root = os.getenv("PROJECT_ROOT")
+    if not project_root:
+        diretorio_scripts = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(diretorio_scripts)
 
-    # Suporta arquivos .npy (NumPy) ou imagens raster (.png, .tif)
-    img_slic = np.load(PATH_SLIC) if PATH_SLIC.endswith(".npy") else np.array(Image.open(PATH_SLIC))
-    img = np.load(PATH_IMG) if PATH_IMG.endswith(".npy") else np.array(Image.open(PATH_IMG))
-    mask = np.load(PATH_MASK) if PATH_MASK.endswith(".npy") else np.array(Image.open(PATH_MASK))
+    # 1. Estrutura de diretórios em data/processing
+    dir_processing = os.path.join(project_root, "data", "processing")
+    dir_proc_rgb = os.path.join(dir_processing, "rgb")
+    dir_proc_masks_npy = os.path.join(dir_processing, "masks", "npy_truth_masks")
+    dir_proc_slics = os.path.join(dir_processing, "slics")
+    dir_proc_csv = os.path.join(dir_processing, "csv")
 
-    return img_slic, img, mask
+    os.makedirs(dir_proc_csv, exist_ok=True)
 
+    # 2. Resolução dos caminhos dos arquivos gerados nas etapas anteriores
+    path_rgb = os.path.join(dir_proc_rgb, f"{code_muni}_rgb_{ano_fim}.png")
+    path_slic = os.path.join(dir_proc_slics, f"mask_slic_{code_muni}_{ano_fim}.npy")
+    path_mask_gt = os.path.join(dir_proc_masks_npy, f"{code_muni}_GT_U_{ano_fim}.npy")
 
-def extracao_caracteristicas(img_slic, img, mask):
-    """Calcula estatísticas por superpíxel e atribui o rótulo majoritário."""
-    # Obter rótulos únicos e contagem
-    unique_labels = np.unique(img_slic)
+    # Fallback para GT_MapBiomas caso GT_U não exista
+    if not os.path.exists(path_mask_gt):
+        path_mask_gt = os.path.join(dir_proc_masks_npy, f"{code_muni}_GT_MapBiomas_{ano_fim}.npy")
+
+    output_csv = os.path.join(dir_proc_csv, f"features_{code_muni}_{ano_fim}.csv")
+
+    # Validação dos arquivos de entrada
+    if not os.path.exists(path_rgb):
+        print(f"❌ [ERRO CRÍTICO] Imagem RGB não encontrada: {path_rgb}")
+        sys.exit(1)
+    if not os.path.exists(path_slic):
+        print(f"❌ [ERRO CRÍTICO] Matriz SLIC (.npy) não encontrada: {path_slic}")
+        sys.exit(1)
+    if not os.path.exists(path_mask_gt):
+        print(f"❌ [ERRO CRÍTICO] Máscara GT (.npy) não encontrada: {path_mask_gt}")
+        sys.exit(1)
+
+    print("=" * 80, flush=True)
+    print(f"🚀 SCRIPT 08.3 - EXTRAÇÃO DE CARACTERÍSTICAS E ROTULAGEM DE SUPERPÍXEIS ({ano_fim})", flush=True)
+    print("=" * 80, flush=True)
+
+    # 3. Carregando Imagem RGB, Matriz SLIC e Ground Truth
+    print("1. Carregando dados de imagem, superpíxeis e máscara de referência...", flush=True)
+    bgr_img = cv2.imread(path_rgb)
+    if bgr_img is None:
+        print(f"❌ [ERRO CRÍTICO] Falha ao ler imagem RGB: {path_rgb}")
+        sys.exit(1)
+
+    rgb_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB)
+    img_slic = np.load(path_slic)
+    truth_mask = np.load(path_mask_gt)
+
+    # 4. Processamento das estatísticas dos superpíxeis ativos (> 0)
+    unique_labels = np.unique(img_slic[img_slic > 0])
     num_superpixels = len(unique_labels)
-    print(f"[INFO] Processando {num_superpixels} superpíxeis...")
+    print(f"2. Extraindo atributos espectrais de {num_superpixels:,} superpíxeis...", flush=True)
 
-    # Dicionário base para a tabela de atributos
     dataset = {'sp_id': unique_labels}
 
-    # 1. Extração de atributos espectrais (Média e Desvio Padrão por canal)
-    num_channels = img.shape[2] if img.ndim == 3 else 1
-
+    num_channels = rgb_img.shape[2] if rgb_img.ndim == 3 else 1
     for c in range(num_channels):
-        channel_data = img[:, :, c] if num_channels > 1 else img
+        channel_data = rgb_img[:, :, c] if num_channels > 1 else rgb_img
         dataset[f'mean_ch{c+1}'] = ndimage.mean(channel_data, labels=img_slic, index=unique_labels)
         dataset[f'std_ch{c+1}'] = ndimage.standard_deviation(channel_data, labels=img_slic, index=unique_labels)
 
-    # 2. Votação majoritária para definição da classe (Ground Truth)
-    if mask.ndim == 3:
-        # Se a máscara for RGB, codifica a cor em um único número inteiro de 64-bit
-        mask_encoded = (
-            mask[:, :, 0].astype(np.uint64) << 32
-        ) | (
-            mask[:, :, 1].astype(np.uint64) << 16
-        ) | mask[:, :, 2].astype(np.uint64)
+    # 5. Atribuição do rótulo majoritário (Ground Truth)
+    print("3. Associando classe predominante por votação majoritária...", flush=True)
+    majority_classes = ndimage.labeled_comprehension(
+        truth_mask,
+        img_slic,
+        unique_labels,
+        lambda x: np.bincount(x).argmax() if len(x) > 0 else 0,
+        int,
+        0
+    )
+    dataset['target_class'] = majority_classes
 
-        majority_codes = ndimage.labeled_comprehension(
-            mask_encoded,
-            img_slic,
-            unique_labels,
-            lambda x: np.bincount(x).argmax(),
-            np.uint64,
-            0
-        )
-        dataset['target_class_code'] = majority_codes
-    else:
-        # Máscara 2D com classes indexadas por inteiros (ex: 0=Fundo, 1=Vegetação, 2=Desmatamento)
-        majority_classes = ndimage.labeled_comprehension(
-            mask,
-            img_slic,
-            unique_labels,
-            lambda x: np.bincount(x).argmax(),
-            int,
-            -1
-        )
-        dataset['target_class'] = majority_classes
+    # 6. Exportação do DataFrame para CSV
+    df_features = pd.DataFrame(dataset)
+    df_features.to_csv(output_csv, index=False)
 
-    return pd.DataFrame(dataset)
-
-
-def main():
-    print("[INFO] Iniciando etapa 08.3: Extração de Características...")
-    
-    # Carregamento dos dados
-    img_slic, img, mask = carregar_dados()
-
-    # Processamento
-    df_features = extracao_caracteristicas(img_slic, img, mask)
-
-    # Salvamento do CSV
-    os.makedirs(os.path.dirname(PATH_OUTPUT_CSV), exist_ok=True)
-    df_features.to_csv(PATH_OUTPUT_CSV, index=False)
-
-    print(f"[SUCESSO] Arquivo gerado com sucesso em: {PATH_OUTPUT_CSV}")
-    print(f"[INFO] Dimensões do dataset: {df_features.shape}")
+    print(f"\n✅ SUCESSO! Script 08.3 concluído.")
+    print(f" -> Tabela salva em: {output_csv}")
+    print(f" -> Dimensões da tabela: {df_features.shape}")
     print(df_features.head())
-
 
 if __name__ == "__main__":
     main()
