@@ -10,12 +10,13 @@ if not hasattr(duckdb.DuckDBPyRelation, "fetchone"):
 import numpy as np
 import rasterio
 from rasterio.windows import Window
+from rasterio.features import rasterize
+import geopandas as gpd
 import cv2
-from PIL import Image
 from dotenv import load_dotenv
 
 def calcular_percentis_banda(src, band_idx, decimation=10):
-    """Calcula p2 e p98 da banda em milissegundos via amostragem rápida por decimação."""
+    """Calcula p2 e p98 da banda via amostragem rápida por decimação."""
     out_shape = (1, max(1, src.height // decimation), max(1, src.width // decimation))
     amostra = src.read(band_idx, out_shape=out_shape).astype(np.float32)
     validos = amostra[amostra > 0]
@@ -55,36 +56,37 @@ def main():
     for folder in [dir_proc_rgb, dir_proc_ndvi, dir_proc_masks_png, dir_proc_masks_npy]:
         os.makedirs(folder, exist_ok=True)
 
-    dir_pan = os.path.join(project_root, "data", "output", "pansharpening", ano_fim)
-    dir_gt = os.path.join(project_root, "data", "output", "ground_truth", ano_fim)
-
-    path_cbers_2m = os.path.join(dir_pan, f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif")
-    path_gt_mb = os.path.join(dir_gt, f"{code_muni}_GT_MapBiomas_{ano_fim}.tif")
-    path_gt_u = os.path.join(dir_gt, f"{code_muni}_GT_U_{ano_fim}.tif")
-    path_gt_m = os.path.join(dir_gt, f"{code_muni}_GT_M_{ano_fim}.tif")
+    # Caminhos oficiais das imagens e shapefile de 3 classes
+    path_cbers_2m = os.path.join(project_root, "data", "output", "pansharpening", ano_fim, f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif")
+    path_shp_3classes = os.path.join(project_root, "data", "output", "segmentation", ano_fim, f"{code_muni}_Segmentacao_3Classes_{ano_fim}.shp")
 
     if not os.path.exists(path_cbers_2m):
         print(f"[ERRO CRÍTICO] Imagem CBERS-4A 2m não encontrada: {path_cbers_2m}")
         sys.exit(1)
+    if not os.path.exists(path_shp_3classes):
+        print(f"[ERRO CRÍTICO] Shapefile de 3 Classes não encontrado: {path_shp_3classes}")
+        sys.exit(1)
 
     print("=" * 80, flush=True)
-    print(f"🚀 SCRIPT 08.1 - PREPARAÇÃO OTIMIZADA EM TILES ({ano_fim})", flush=True)
+    print(f"🚀 SCRIPT 08.1 - PREPARAÇÃO DE DADOS & RASTERIZAÇÃO 3 CLASSES ({ano_fim})", flush=True)
     print("=" * 80, flush=True)
 
     with rasterio.open(path_cbers_2m) as src:
         height, width = src.height, src.width
         num_bands = src.count
+        crs_img = src.crs
+        transform_img = src.transform
 
         print("1. Calculando estatísticas radiométricas (p2/p98)...", flush=True)
         p2_r, p98_r = calcular_percentis_banda(src, 1)
         p2_g, p98_g = calcular_percentis_banda(src, 2)
         p2_b, p98_b = calcular_percentis_banda(src, 3)
 
-        # 2. Gerar Composição RGB em Tiles (uint8 direto)
+        # 2. Gerar Composição RGB em Tiles
         print("2. Processando composição RGB em blocos...", flush=True)
         rgb_composite = np.zeros((height, width, 3), dtype=np.uint8)
-        
         tile_size = 2048
+
         for y in range(0, height, tile_size):
             for x in range(0, width, tile_size):
                 h_win = min(tile_size, height - y)
@@ -101,7 +103,7 @@ def main():
 
         output_rgb_path = os.path.join(dir_proc_rgb, f"{code_muni}_rgb_{ano_fim}.png")
         cv2.imwrite(output_rgb_path, cv2.cvtColor(rgb_composite, cv2.COLOR_RGB2BGR))
-        print(f"   -> Composição RGB salva em: {output_rgb_path}", flush=True)
+        print(f" -> Composição RGB salva em: {output_rgb_path}", flush=True)
         del rgb_composite
         gc.collect()
 
@@ -122,39 +124,55 @@ def main():
                     denom = nir_tile + r_tile
                     denom[denom == 0] = 1e-6
                     ndvi_tile = (nir_tile - r_tile) / denom
-
                     ndvi_scaled[y:y+h_win, x:x+w_win] = np.interp(ndvi_tile, (-1.0, 1.0), (0, 255)).astype(np.uint8)
 
             output_ndvi_path = os.path.join(dir_proc_ndvi, f"{code_muni}_ndvi_{ano_fim}.png")
             cv2.imwrite(output_ndvi_path, ndvi_scaled)
-            print(f"   -> NDVI salvo em: {output_ndvi_path}", flush=True)
+            print(f" -> NDVI salvo em: {output_ndvi_path}", flush=True)
             del ndvi_scaled
             gc.collect()
 
-    # 4. Exportação das Máscaras (PNG e NPY)
-    print("4. Salvando conjuntos verdade em .png e .npy em data/processing/...", flush=True)
-    gt_dict = {
-        'GT_MapBiomas': path_gt_mb,
-        'GT_U': path_gt_u,
-        'GT_M': path_gt_m
-    }
+        # 4. Rasterização Estrita do Shapefile de 3 Classes
+        print("4. Rasterizando Shapefile 3Classes (Verde=1 [Floresta], Vermelho=2 [Nao_Floresta], Preto=0)...", flush=True)
+        gdf_3c = gpd.read_file(path_shp_3classes)
+        if gdf_3c.crs != crs_img:
+            gdf_3c = gdf_3c.to_crs(crs_img)
 
-    for name_gt, path_gt in gt_dict.items():
-        if os.path.exists(path_gt):
-            with rasterio.open(path_gt) as src_gt:
-                mask_data = src_gt.read(1).astype(np.uint8)
-                
-                out_npy = os.path.join(dir_proc_masks_npy, f"{code_muni}_{name_gt}_{ano_fim}.npy")
-                np.save(out_npy, mask_data)
-                
-                out_png = os.path.join(dir_proc_masks_png, f"{code_muni}_{name_gt}_{ano_fim}.png")
-                cv2.imwrite(out_png, mask_data)
-                
-                print(f"   -> {name_gt}: Salvo NPY ({out_npy}) e PNG ({out_png})", flush=True)
-                del mask_data
-                gc.collect()
+        def class_to_code(cname):
+            s = str(cname).lower().strip()
+            if "nao_floresta" in s or "nao floresta" in s:
+                return 2  # Vermelho (Nao_Floresta)
+            elif "floresta" in s:
+                return 1  # Verde (Floresta)
+            return 0      # Preto (Nao_Segmentar)
 
-    print("\n✅ SUCESSO! Script 08.1 concluído sem estourar RAM.")
+        shapes = [(geom, class_to_code(cname)) for geom, cname in zip(gdf_3c.geometry, gdf_3c['class_name']) if not geom.is_empty]
+
+        gt_3classes = rasterize(
+            shapes=shapes,
+            out_shape=(height, width),
+            transform=transform_img,
+            fill=0,
+            dtype=np.uint8
+        )
+
+        # 5. Exportação da Máscara Verdade Matricial (.npy e .png)
+        out_npy_3c = os.path.join(dir_proc_masks_npy, f"{code_muni}_GT_3Classes_{ano_fim}.npy")
+        out_png_3c = os.path.join(dir_proc_masks_png, f"{code_muni}_GT_3Classes_{ano_fim}.png")
+        np.save(out_npy_3c, gt_3classes)
+        cv2.imwrite(out_png_3c, gt_3classes)
+
+        # Compatibilidade com scripts legados (GT_U)
+        out_npy_gt_u = os.path.join(dir_proc_masks_npy, f"{code_muni}_GT_U_{ano_fim}.npy")
+        out_png_gt_u = os.path.join(dir_proc_masks_png, f"{code_muni}_GT_U_{ano_fim}.png")
+        np.save(out_npy_gt_u, gt_3classes)
+        cv2.imwrite(out_png_gt_u, gt_3classes)
+
+        print(f" -> Máscara 3Classes salva com sucesso:")
+        print(f"    - NPY: {out_npy_3c}")
+        print(f"    - PNG: {out_png_3c}")
+
+    print("\n✅ SUCESSO! Script 08.1 concluído.")
 
 if __name__ == "__main__":
     main()
