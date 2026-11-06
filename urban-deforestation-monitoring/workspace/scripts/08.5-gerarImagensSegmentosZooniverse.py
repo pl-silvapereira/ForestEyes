@@ -2,11 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 ==============================================================================
-Etapa 08.5: Geração Amostrada (Piloto) e Completa de Chips Zooniverse
-==============================================================================
-Fluxo:
- - Fase 1: Gera os 100 chips piloto e dispara a 1ª chamada do Script 08.6.
- - Fase 2: Gera os chips restantes (imagem 101 ao fim) e dispara a 2ª chamada do 08.6.
+Etapa 08.5: Geração de Chips Multi-Composição (RGB, NDVI, NIR) para Zooniverse
 ==============================================================================
 """
 
@@ -17,7 +13,6 @@ import subprocess
 import warnings
 import duckdb
 
-# Compatibilidade DuckDB / geobr
 if not hasattr(duckdb.DuckDBPyRelation, "fetchone"):
     duckdb.DuckDBPyRelation.fetchone = lambda self: self.fetchall()[0]
 
@@ -30,21 +25,19 @@ from dotenv import load_dotenv
 warnings.filterwarnings("ignore", category=UserWarning)
 
 ZOOM_PARAM = 2.5
-BORDER = 120
+BORDER = 60  # Reduzido para 60px (120m) para dar mais foco ao superpixel central
 
 PREFIX_MAP = {
-    'ndvi': 0,
-    'rgb': 0
+    'rgb': 0,
+    'ndvi': 1,
+    'nir': 2
 }
 
-def obter_cor_contorno(composition):
-    return (20, 70, 140)
+def obter_cor_contorno():
+    # Amarelo Fluorescente Vivo em BGR (Alto contraste em RGB, NDVI e NIR)
+    return (0, 255, 255)
 
 def selecionar_amostras(df, modo='pilot'):
-    """
-    Fase 1 ('pilot'): 50 superpixels balanceados por classe.
-    Fase 2 ('remaining'): Todos os superpixels restantes (imagem 101 em diante).
-    """
     total = len(df)
     if modo == 'pilot':
         if total <= 50:
@@ -54,21 +47,23 @@ def selecionar_amostras(df, modo='pilot'):
         return pd.concat([df_top25, df_bottom25]).drop_duplicates(subset=["Segment_label"])
     elif modo == 'remaining':
         if total <= 50:
-            return pd.DataFrame()  # Já processados no piloto
-        # Extrai os elementos entre o topo 25 e os últimos 25
+            return pd.DataFrame()
         return df.iloc[25:total-25].copy()
 
-def processar_chips(code_muni, ano_fim, classification, composition, path_slic, path_csv, dir_img, dir_output, modo='pilot'):
+def processar_chips(code_muni, ano_fim, classification, composition, path_slic, path_csv, dir_processing, dir_output, modo='pilot'):
     if not os.path.exists(path_csv):
-        print(f"⚠️ [AVISO] CSV não encontrado: {path_csv}. Pulando classe {classification}...")
         return
 
-    path_img_comp = os.path.join(dir_img, f"{code_muni}_{composition}_{ano_fim}.png")
+    # Busca a imagem correspondente à composição
+    dir_comp = os.path.join(dir_processing, composition)
+    path_img_comp = os.path.join(dir_comp, f"{code_muni}_{composition}_{ano_fim}.png")
+    
     if not os.path.exists(path_img_comp):
-        path_img_comp = os.path.join(dir_img, f"{code_muni}_rgb_{ano_fim}.png")
-        
+        # Fallback para pasta RGB se a composição não estiver na pasta própria
+        path_img_comp = os.path.join(dir_processing, "rgb", f"{code_muni}_rgb_{ano_fim}.png")
+
     if not os.path.exists(path_img_comp):
-        print(f"⚠️ [AVISO] Imagem não encontrada: {path_img_comp}. Pulando...")
+        print(f"⚠️ Imagem não encontrada: {path_img_comp}. Pulando...")
         return
 
     img = cv2.imread(path_img_comp)
@@ -83,25 +78,24 @@ def processar_chips(code_muni, ano_fim, classification, composition, path_slic, 
 
     df = selecionar_amostras(df_raw, modo=modo)
     if df.empty:
-        print(f"ℹ️ Sem registros para a fase '{modo}' na classe '{classification}'.")
         return
 
     unique_segments_sort = df["Segment_label"].values
     hors_sort = df["HoR"].values
     num_segs = len(unique_segments_sort)
 
-    tag_fase = "PILOTO (100 Imagens)" if modo == 'pilot' else "EXECUÇÃO COMPLETA (Da imagem 101 ao fim)"
-    print(f"\n📸 [{tag_fase}] Classe: '{classification}' | Quantidade: {num_segs} chips", flush=True)
+    tag_fase = "PILOTO (100 Imagens)" if modo == 'pilot' else "RESTANTES"
+    print(f"\n📸 [{tag_fase}] Classe: '{classification}' | {num_segs} chips | Composição: '{composition.upper()}'", flush=True)
 
     prefix = PREFIX_MAP.get(composition.lower(), 0)
-    color_bgr = obter_cor_contorno(composition)
+    color_bgr = obter_cor_contorno()
 
     output_dir_full = os.path.join(dir_output, f"AE-X{code_muni}", f"{classification}_sort_hor", composition)
     os.makedirs(output_dir_full, exist_ok=True)
 
     nrows, ncols = img.shape[:2]
 
-    for i, seg_val in enumerate(tqdm(unique_segments_sort, desc=f" {classification}/{composition} ({modo})")):
+    for i, seg_val in enumerate(tqdm(unique_segments_sort, desc=f" {classification}/{composition}")):
         hor_seg = hors_sort[i]
         seg_mask = (img_slic == seg_val).astype(np.uint8)
         
@@ -119,13 +113,14 @@ def processar_chips(code_muni, ano_fim, classification, composition, path_slic, 
 
         newimg = img.copy()
         contours, _ = cv2.findContours(seg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-        cv2.drawContours(newimg, contours, -1, color_bgr, thickness=1)
+        # Contorno Amarelo Vivo com espessura 2px para destaque nítido
+        cv2.drawContours(newimg, contours, -1, color_bgr, thickness=2)
 
         subimg = newimg[first_row:last_row + 1, first_col:last_col + 1]
 
         if subimg.size > 0:
             zoomimg = cv2.resize(subimg, None, fx=ZOOM_PARAM, fy=ZOOM_PARAM, interpolation=cv2.INTER_CUBIC)
-            idx_label = f"pilot_{i:02d}" if modo == 'pilot' else f"rem_{i:05d}"
+            idx_label = f"p_{i:02d}" if modo == 'pilot' else f"r_{i:05d}"
             filename = f"{prefix}_{idx_label}_task_{int(seg_val)}_HoR_{hor_seg:.4f}_{composition}.png"
             output_filepath = os.path.join(output_dir_full, filename)
             cv2.imwrite(output_filepath, zoomimg)
@@ -139,11 +134,9 @@ def disparar_script_086(script_086_path, code_muni, ano_inicio, ano_fim, fase_no
         cmd = [sys.executable, script_086_path, code_muni, ano_inicio, ano_fim]
         res = subprocess.run(cmd)
         if res.returncode == 0:
-            print(f"✅ Script 08.6 executado com sucesso ({fase_nome})!")
+            print(f"✅ Script 08.6 concluído com sucesso ({fase_nome})!")
         else:
-            print(f"⚠️ Erro ao executar Script 08.6 ({fase_nome}): Código {res.returncode}")
-    else:
-        print(f"⚠️ Script 08.6 não encontrado em: {script_086_path}")
+            print(f"⚠️ Erro ao executar Script 08.6: Código {res.returncode}")
 
 def main():
     if len(sys.argv) < 4:
@@ -162,7 +155,6 @@ def main():
         project_root = os.path.dirname(diretorio_scripts)
 
     dir_processing = os.path.join(project_root, "data", "processing")
-    dir_proc_rgb = os.path.join(dir_processing, "rgb")
     dir_proc_slics = os.path.join(dir_processing, "slics")
     dir_csv_root = os.path.join(dir_processing, "csv")
     
@@ -182,37 +174,38 @@ def main():
         sys.exit(1)
 
     classifications = ['forest', 'non-forest']
-    compositions = ['rgb']
+    # Agora processa RGB, NDVI e NIR!
+    compositions = ['rgb', 'ndvi', 'nir']
 
     # =========================================================================
-    # FASE 1: EXECUÇÃO DO PILOTO (100 IMAGENS) E 1ª CHAMADA DO SCRIPT 08.6
+    # FASE 1: PILOTO E 1ª CHAMADA DO 08.6
     # =========================================================================
     print("=" * 80, flush=True)
-    print(f"🚀 FASE 1 - GERAÇÃO PILOTO (100 IMAGENS) ({ano_fim})", flush=True)
+    print(f"🚀 FASE 1 - CAMPANHA PILOTO (100 IMAGENS x 3 COMPOSIÇÕES) ({ano_fim})", flush=True)
     print("=" * 80, flush=True)
 
     for classification in classifications:
         path_csv = os.path.join(dir_csv_forest if classification == 'forest' else dir_csv_non_forest, f"df_{classification}_sort_{code_muni}_{ano_fim}.csv")
         for composition in compositions:
-            processar_chips(code_muni, ano_fim, classification, composition, path_slic, path_csv, dir_proc_rgb, dir_output_zooniverse, modo='pilot')
+            processar_chips(code_muni, ano_fim, classification, composition, path_slic, path_csv, dir_processing, dir_output_zooniverse, modo='pilot')
 
     disparar_script_086(script_086_path, code_muni, ano_inicio, ano_fim, "1ª Chamada - Piloto")
 
     # =========================================================================
-    # FASE 2: EXECUÇÃO DOS RESTANTES (IMAGEM 101 AO FIM) E 2ª CHAMADA DO SCRIPT 08.6
+    # FASE 2: EXECUÇÃO COMPLETA (RESTANTES) E 2ª CHAMADA DO 08.6
     # =========================================================================
     print("\n" + "=" * 80, flush=True)
-    print(f"🚀 FASE 2 - GERAÇÃO DOS SUPERPIXELS RESTANTES (IMAGEM 101 AO FIM) ({ano_fim})", flush=True)
+    print(f"🚀 FASE 2 - PROCESSAMENTO COMPLETO DOS RESTANTES ({ano_fim})", flush=True)
     print("=" * 80, flush=True)
 
     for classification in classifications:
         path_csv = os.path.join(dir_csv_forest if classification == 'forest' else dir_csv_non_forest, f"df_{classification}_sort_{code_muni}_{ano_fim}.csv")
         for composition in compositions:
-            processar_chips(code_muni, ano_fim, classification, composition, path_slic, path_csv, dir_proc_rgb, dir_output_zooniverse, modo='remaining')
+            processar_chips(code_muni, ano_fim, classification, composition, path_slic, path_csv, dir_processing, dir_output_zooniverse, modo='remaining')
 
     disparar_script_086(script_086_path, code_muni, ano_inicio, ano_fim, "2ª Chamada - Completa")
 
-    print(f"\n🎉 PROCESSO COMPLETO FINALIZADO! Todos os recortes e tarefas foram gerados.")
+    print(f"\n🎉 PROCESSO CONCLUÍDO! Todas as composições e tarefas foram geradas.")
 
 if __name__ == "__main__":
     main()
