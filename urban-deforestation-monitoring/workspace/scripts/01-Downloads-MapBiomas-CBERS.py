@@ -1,3 +1,9 @@
+import ee
+print("Autenticando no Google Earth Engine...")
+ee.Authenticate()
+ee.Initialize(project='foresteyes-regioes-urbanas')
+print("Earth Engine inicializado com sucesso.")
+
 import sys
 import time
 import shutil
