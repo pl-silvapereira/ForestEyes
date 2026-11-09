@@ -1,33 +1,49 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+==============================================================================
+Etapa 08.1: Preparação de Dados (Shapefile 3 Classes -> Matriz Numpy e PNGs)
+==============================================================================
+Entradas:
+ - Shapefile 3 Classes: data/output/segmentation/{ano_fim}/{code_muni}_Segmentacao_3Classes_{ano_fim}.shp
+ - CBERS-4A 2m: data/output/pansharpening/{ano_fim}/{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif
+
+Saídas em data/processing/:
+ - slics/matriz_classes_{code_muni}_{ano_fim}.npy  (1=Floresta, 2=Não-Floresta, 0=Não Segmentar)
+ - rgb/{code_muni}_rgb_{ano_fim}.png
+ - ndvi/{code_muni}_ndvi_{ano_fim}.png
+ - nir/{code_muni}_nir_{ano_fim}.png
+==============================================================================
+"""
+
 import sys
 import os
 import gc
+import warnings
 import duckdb
 
 if not hasattr(duckdb.DuckDBPyRelation, "fetchone"):
     duckdb.DuckDBPyRelation.fetchone = lambda self: self.fetchall()[0]
 
-import numpy as np
-import rasterio
-from rasterio.windows import Window
-from rasterio.features import rasterize
-import geopandas as gpd
 import cv2
+import numpy as np
+import geopandas as gpd
+import rasterio
+from rasterio.features import rasterize
 from dotenv import load_dotenv
 
-def calcular_percentis_banda(src, band_idx, decimation=10):
-    """Calcula p2 e p98 da banda via amostragem rápida por decimação."""
-    out_shape = (1, max(1, src.height // decimation), max(1, src.width // decimation))
-    amostra = src.read(band_idx, out_shape=out_shape).astype(np.float32)
-    validos = amostra[amostra > 0]
-    if len(validos) > 0:
-        p2, p98 = np.percentile(validos, (2, 98))
-    else:
-        p2, p98 = 0, 1
+warnings.filterwarnings("ignore", category=UserWarning)
+
+def normalizar_8bits(array):
+    """Normaliza matriz radiométrica para o intervalo 0-255 (uint8) com stretch 2-98%."""
+    valid_mask = array > 0
+    if not np.any(valid_mask):
+        return np.zeros(array.shape, dtype=np.uint8)
+    p2, p98 = np.percentile(array[valid_mask], (2, 98))
     if p98 == p2:
-        p98 = p2 + 1
-    del amostra, validos
-    gc.collect()
-    return float(p2), float(p98)
+        p98 = p2 + 1.0
+    norm = np.clip((array - p2) / (p98 - p2) * 255.0, 0, 255)
+    return norm.astype(np.uint8)
 
 def main():
     if len(sys.argv) < 4:
@@ -45,144 +61,95 @@ def main():
         diretorio_scripts = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(diretorio_scripts)
 
-    dir_processing = os.path.join(project_root, "data", "processing")
-    dir_proc_rgb = os.path.join(dir_processing, "rgb")
-    dir_proc_ndvi = os.path.join(dir_processing, "ndvi")
-    dir_proc_nir = os.path.join(dir_processing, "nir")
-    dir_proc_masks_png = os.path.join(dir_processing, "masks", "png_truth_masks")
-    dir_proc_masks_npy = os.path.join(dir_processing, "masks", "npy_truth_masks")
-
-    for folder in [dir_proc_rgb, dir_proc_ndvi, dir_proc_nir, dir_proc_masks_png, dir_proc_masks_npy]:
-        os.makedirs(folder, exist_ok=True)
-
-    path_cbers_2m = os.path.join(project_root, "data", "output", "pansharpening", ano_fim, f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif")
     path_shp_3classes = os.path.join(project_root, "data", "output", "segmentation", ano_fim, f"{code_muni}_Segmentacao_3Classes_{ano_fim}.shp")
+    path_cbers = os.path.join(project_root, "data", "output", "pansharpening", ano_fim, f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif")
 
-    if not os.path.exists(path_cbers_2m):
-        print(f"[ERRO CRÍTICO] Imagem CBERS-4A 2m não encontrada: {path_cbers_2m}")
+    dir_processing = os.path.join(project_root, "data", "processing")
+    dir_slics = os.path.join(dir_processing, "slics")
+    dir_rgb = os.path.join(dir_processing, "rgb")
+    dir_ndvi = os.path.join(dir_processing, "ndvi")
+    dir_nir = os.path.join(dir_processing, "nir")
+
+    for d in [dir_slics, dir_rgb, dir_ndvi, dir_nir]:
+        os.makedirs(d, exist_ok=True)
+
+    path_matriz_out = os.path.join(dir_slics, f"matriz_classes_{code_muni}_{ano_fim}.npy")
+    path_png_rgb = os.path.join(dir_rgb, f"{code_muni}_rgb_{ano_fim}.png")
+    path_png_ndvi = os.path.join(dir_ndvi, f"{code_muni}_ndvi_{ano_fim}.png")
+    path_png_nir = os.path.join(dir_nir, f"{code_muni}_nir_{ano_fim}.png")
+
+    if not os.path.exists(path_shp_3classes) or not os.path.exists(path_cbers):
+        print(f"❌ Erro Crítico: Arquivos de entrada ausentes:")
+        print(f" - Shapefile: {path_shp_3classes}")
+        print(f" - Raster CBERS: {path_cbers}")
         sys.exit(1)
-    if not os.path.exists(path_shp_3classes):
-        print(f"[ERRO CRÍTICO] Shapefile 3Classes não encontrado: {path_shp_3classes}")
-        sys.exit(1)
 
-    print("=" * 80, flush=True)
-    print(f"🚀 SCRIPT 08.1 - GERAÇÃO MULTI-COMPOSIÇÃO (RGB, NDVI, NIR) E RASTERIZAÇÃO ({ano_fim})", flush=True)
-    print("=" * 80, flush=True)
+    print("=" * 80)
+    print(f"🚀 PREPARAÇÃO DE DADOS (3 CLASSES -> SLIC BASE) - IBGE {code_muni} ({ano_fim})")
+    print("=" * 80)
 
-    with rasterio.open(path_cbers_2m) as src:
-        height, width = src.height, src.width
+    # 1. Leitura de metadados do CBERS
+    print("1. Lendo cena raster CBERS-4A (2m)...")
+    with rasterio.open(path_cbers) as src:
+        cbers_shape = (src.height, src.width)
+        cbers_crs = src.crs
+        cbers_transform = src.transform
         num_bands = src.count
-        crs_img = src.crs
-        transform_img = src.transform
 
-        print("1. Calculando estatísticas radiométricas (p2/p98)...", flush=True)
-        # CBERS-4A WPM: Banda 1 = Azul, Banda 2 = Verde, Banda 3 = Vermelho, Banda 4 = NIR
-        p2_b, p98_b = calcular_percentis_banda(src, 1)
-        p2_g, p98_g = calcular_percentis_banda(src, 2)
-        p2_r, p98_r = calcular_percentis_banda(src, 3)
-        p2_nir, p98_nir = calcular_percentis_banda(src, 4) if num_bands >= 4 else (0, 1)
+        band_r = src.read(1).astype(np.float32)
+        band_g = src.read(2).astype(np.float32)
+        band_b = src.read(3).astype(np.float32)
+        band_nir = src.read(4).astype(np.float32) if num_bands >= 4 else None
 
-        tile_size = 2048
+    # 2. Leitura e rasterização do Shapefile 3 Classes
+    print("2. Rasterizando Shapefile 3 Classes (Floresta=1, Não-Floresta=2, Não Segmentar=0)...")
+    gdf_3classes = gpd.read_file(path_shp_3classes).to_crs(cbers_crs)
 
-        # 2. Composição RGB Natural (B3, B2, B1)
-        print("2. Gerando imagem RGB Natural...", flush=True)
-        rgb_composite = np.zeros((height, width, 3), dtype=np.uint8)
-        for y in range(0, height, tile_size):
-            for x in range(0, width, tile_size):
-                h_win, w_win = min(tile_size, height - y), min(tile_size, width - x)
-                win = Window(x, y, w_win, h_win)
+    col_classe = "class_name" if "class_name" in gdf_3classes.columns else ("classe" if "classe" in gdf_3classes.columns else None)
+    if not col_classe:
+        col_classe = gdf_3classes.columns[0]
 
-                r_t = src.read(3, window=win).astype(np.float32)
-                g_t = src.read(2, window=win).astype(np.float32)
-                b_t = src.read(1, window=win).astype(np.float32)
+    gdf_floresta = gdf_3classes[gdf_3classes[col_classe].astype(str).str.contains("Floresta", case=False, na=False) & 
+                                ~gdf_3classes[col_classe].astype(str).str.contains("Nao", case=False, na=False)]
+    
+    gdf_nao_floresta = gdf_3classes[gdf_3classes[col_classe].astype(str).str.contains("Nao_Floresta|Não_Floresta|Nao Floresta", case=False, na=False)]
 
-                rgb_composite[y:y+h_win, x:x+w_win, 0] = np.clip((r_t - p2_r) / (p98_r - p2_r) * 255.0, 0, 255).astype(np.uint8)
-                rgb_composite[y:y+h_win, x:x+w_win, 1] = np.clip((g_t - p2_g) / (p98_g - p2_g) * 255.0, 0, 255).astype(np.uint8)
-                rgb_composite[y:y+h_win, x:x+w_win, 2] = np.clip((b_t - p2_b) / (p98_b - p2_b) * 255.0, 0, 255).astype(np.uint8)
+    matriz_classes = np.zeros(cbers_shape, dtype=np.uint8)
 
-        output_rgb_path = os.path.join(dir_proc_rgb, f"{code_muni}_rgb_{ano_fim}.png")
-        cv2.imwrite(output_rgb_path, cv2.cvtColor(rgb_composite, cv2.COLOR_RGB2BGR))
-        del rgb_composite
-        gc.collect()
+    if not gdf_floresta.empty:
+        shapes_flor = [(geom, 1) for geom in gdf_floresta.geometry if geom.is_valid]
+        mask_flor = rasterize(shapes_flor, out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8)
+        matriz_classes[mask_flor == 1] = 1
 
-        # 3. Composição Falsa Cor NIR (NIR-R-G: B4, B3, B2)
-        if num_bands >= 4:
-            print("3. Gerando imagem Falsa Cor NIR (Vegetação em Vermelho Vivo)...", flush=True)
-            nir_composite = np.zeros((height, width, 3), dtype=np.uint8)
-            for y in range(0, height, tile_size):
-                for x in range(0, width, tile_size):
-                    h_win, w_win = min(tile_size, height - y), min(tile_size, width - x)
-                    win = Window(x, y, w_win, h_win)
+    if not gdf_nao_floresta.empty:
+        shapes_nflor = [(geom, 2) for geom in gdf_nao_floresta.geometry if geom.is_valid]
+        mask_nflor = rasterize(shapes_nflor, out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8)
+        matriz_classes[mask_nflor == 2] = 2
 
-                    nir_t = src.read(4, window=win).astype(np.float32)
-                    r_t = src.read(3, window=win).astype(np.float32)
-                    g_t = src.read(2, window=win).astype(np.float32)
+    np.save(path_matriz_out, matriz_classes)
+    print(f" ✅ Matriz de classes salva em: {path_matriz_out}")
 
-                    nir_composite[y:y+h_win, x:x+w_win, 0] = np.clip((nir_t - p2_nir) / (p98_nir - p2_nir) * 255.0, 0, 255).astype(np.uint8)
-                    nir_composite[y:y+h_win, x:x+w_win, 1] = np.clip((r_t - p2_r) / (p98_r - p2_r) * 255.0, 0, 255).astype(np.uint8)
-                    nir_composite[y:y+h_win, x:x+w_win, 2] = np.clip((g_t - p2_g) / (p98_g - p2_g) * 255.0, 0, 255).astype(np.uint8)
+    # 3. Geração das composições 8-bit PNG
+    print("3. Exportando composições visuais RGB, NDVI e NIR em formato PNG...")
+    r_8 = normalizar_8bits(band_r)
+    g_8 = normalizar_8bits(band_g)
+    b_8 = normalizar_8bits(band_b)
+    img_rgb = cv2.merge([b_8, g_8, r_8])
+    cv2.imwrite(path_png_rgb, img_rgb)
 
-            output_nir_path = os.path.join(dir_proc_nir, f"{code_muni}_nir_{ano_fim}.png")
-            cv2.imwrite(output_nir_path, cv2.cvtColor(nir_composite, cv2.COLOR_RGB2BGR))
-            del nir_composite
-            gc.collect()
+    if band_nir is not None:
+        nir_8 = normalizar_8bits(band_nir)
+        img_nir = cv2.merge([g_8, r_8, nir_8])  # Falsa Cor NIR
+        cv2.imwrite(path_png_nir, img_nir)
 
-        # 4. NDVI em Escala de Cinza
-        if num_bands >= 4:
-            print("4. Gerando Índice de Vegetação NDVI (Escala de Cinza)...", flush=True)
-            ndvi_scaled = np.zeros((height, width), dtype=np.uint8)
-            for y in range(0, height, tile_size):
-                for x in range(0, width, tile_size):
-                    h_win, w_win = min(tile_size, height - y), min(tile_size, width - x)
-                    win = Window(x, y, w_win, h_win)
+        denom = band_nir + band_r
+        denom[denom == 0] = 1e-6
+        ndvi = (band_nir - band_r) / denom
+        ndvi_scaled = np.clip((ndvi + 1.0) / 2.0 * 255.0, 0, 255).astype(np.uint8)
+        img_ndvi = cv2.merge([ndvi_scaled, ndvi_scaled, ndvi_scaled])
+        cv2.imwrite(path_png_ndvi, img_ndvi)
 
-                    r_t = src.read(3, window=win).astype(np.float32)
-                    nir_t = src.read(4, window=win).astype(np.float32)
-
-                    denom = nir_t + r_t
-                    denom[denom == 0] = 1e-6
-                    ndvi_tile = (nir_t - r_t) / denom
-                    ndvi_scaled[y:y+h_win, x:x+w_win] = np.interp(ndvi_tile, (-1.0, 1.0), (0, 255)).astype(np.uint8)
-
-            output_ndvi_path = os.path.join(dir_proc_ndvi, f"{code_muni}_ndvi_{ano_fim}.png")
-            cv2.imwrite(output_ndvi_path, ndvi_scaled)
-            del ndvi_scaled
-            gc.collect()
-
-        # 5. Rasterização Estrita do Shapefile 3Classes
-        print("5. Rasterizando Shapefile (1=Floresta/Verde, 2=Nao_Floresta/Vermelho, 0=Preto)...", flush=True)
-        gdf_3c = gpd.read_file(path_shp_3classes)
-        if gdf_3c.crs != crs_img:
-            gdf_3c = gdf_3c.to_crs(crs_img)
-
-        def class_to_code(cname):
-            s = str(cname).lower().strip()
-            if "nao_floresta" in s or "nao floresta" in s:
-                return 2  # Vermelho (Nao_Floresta)
-            elif "floresta" in s:
-                return 1  # Verde (Floresta)
-            return 0      # Preto (Nao_Segmentar)
-
-        shapes = [(geom, class_to_code(cname)) for geom, cname in zip(gdf_3c.geometry, gdf_3c['class_name']) if not geom.is_empty]
-
-        gt_3classes = rasterize(
-            shapes=shapes,
-            out_shape=(height, width),
-            transform=transform_img,
-            fill=0,
-            dtype=np.uint8
-        )
-
-        out_npy_3c = os.path.join(dir_proc_masks_npy, f"{code_muni}_GT_3Classes_{ano_fim}.npy")
-        out_png_3c = os.path.join(dir_proc_masks_png, f"{code_muni}_GT_3Classes_{ano_fim}.png")
-        np.save(out_npy_3c, gt_3classes)
-        cv2.imwrite(out_png_3c, gt_3classes)
-
-        # Compatibilidade com GT_U
-        out_npy_gt_u = os.path.join(dir_proc_masks_npy, f"{code_muni}_GT_U_{ano_fim}.npy")
-        np.save(out_npy_gt_u, gt_3classes)
-
-    print("\n✅ SUCESSO! Script 08.1 gerou RGB, NIR, NDVI e a máscara 3Classes.")
+    print("🎉 Etapa 08.1 concluída com sucesso!")
 
 if __name__ == "__main__":
     main()
