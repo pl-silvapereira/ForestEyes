@@ -2,153 +2,53 @@
 # -*- coding: utf-8 -*-
 """
 ==============================================================================
-Etapa 08.5: Geração Exclusiva da Campanha Piloto (100 Superpixels) Zooniverse
+Etapa 08.1: Preparação de Dados (Shapefile 3 Classes -> Matriz Numpy e PNGs)
 ==============================================================================
-Descrição:
- - Processa APENAS a Fase 1 (100 superpixels balanceados):
-   * 25 Floresta (HoR = 1.0) + 25 Floresta (HoR ~ 0.7)
-   * 25 Não-Floresta (HoR = 1.0) + 25 Não-Floresta (HoR ~ 0.7)
- - Desenha contornos em amarelo fluorescente (2px), aplica zoom de 2.5x e gera os chips.
- - Chama automaticamente o Script 08.6 ao finalizar e encerra a execução.
+Entradas:
+ - Shapefile 3 Classes: data/output/segmentation/{ano_fim}/{code_muni}_Segmentacao_3Classes_{ano_fim}.shp
+ - CBERS-4A 2m: data/output/pansharpening/{ano_fim}/{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif
+
+Saídas em data/processing/:
+ - slics/matriz_classes_{code_muni}_{ano_fim}.npy  (1=Floresta, 2=Não-Floresta, 0=Não Segmentar)
+ - rgb/{code_muni}_rgb_{ano_fim}.png
+ - ndvi/{code_muni}_ndvi_{ano_fim}.png
+ - nir/{code_muni}_nir_{ano_fim}.png
 ==============================================================================
 """
 
 import sys
 import os
 import gc
-import subprocess
 import warnings
 import duckdb
 
-# Compatibilidade DuckDB / geobr
 if not hasattr(duckdb.DuckDBPyRelation, "fetchone"):
     duckdb.DuckDBPyRelation.fetchone = lambda self: self.fetchall()[0]
 
 import cv2
 import numpy as np
-import pandas as pd
-from tqdm import tqdm
+import geopandas as gpd
+import rasterio
+from rasterio.features import rasterize
 from dotenv import load_dotenv
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
-ZOOM_PARAM = 2.5
-BORDER = 60  # Borda de contexto de 60px (120m no terreno)
-
-PREFIX_MAP = {
-    'rgb': 0,
-    'ndvi': 1,
-    'nir': 2
-}
-
-def obter_cor_contorno():
-    # Amarelo Fluorescente Vivo em BGR (Alto contraste sobre RGB, NDVI e NIR)
-    return (0, 255, 255)
-
-def selecionar_amostras_piloto(df):
-    """
-    Seleciona 50 superpixels balanceados por classe (Total de 100 no projeto):
-    - 25 de máxima pureza (HoR = 1.0 - topo do CSV ordenado descendentemente)
-    - 25 de limiar (HoR próximo de 0.7 - base do CSV ordenado descendentemente)
-    """
-    total = len(df)
-    if total <= 50:
-        return df.copy()
-
-    df_top25 = df.head(25)
-    df_bottom25 = df.tail(25)
-    return pd.concat([df_top25, df_bottom25]).drop_duplicates(subset=["Segment_label"])
-
-def processar_chips_piloto(code_muni, ano_fim, classification, composition, path_slic, path_csv, dir_processing, dir_output):
-    if not os.path.exists(path_csv):
-        print(f"⚠️ CSV não encontrado: {path_csv}. Pulando classe {classification}...")
-        return
-
-    dir_comp = os.path.join(dir_processing, composition)
-    path_img_comp = os.path.join(dir_comp, f"{code_muni}_{composition}_{ano_fim}.png")
-    
-    if not os.path.exists(path_img_comp):
-        path_img_comp = os.path.join(dir_processing, "rgb", f"{code_muni}_rgb_{ano_fim}.png")
-
-    if not os.path.exists(path_img_comp):
-        print(f"⚠️ Imagem de entrada ausente: {path_img_comp}. Pulando...")
-        return
-
-    img = cv2.imread(path_img_comp)
-    if img is None:
-        return
-
-    img_slic = np.load(path_slic)
-    df_raw = pd.read_csv(path_csv)
-
-    if df_raw.empty:
-        return
-
-    df = selecionar_amostras_piloto(df_raw)
-    if df.empty:
-        return
-
-    unique_segments_sort = df["Segment_label"].values
-    hors_sort = df["HoR"].values
-    num_segs = len(unique_segments_sort)
-
-    print(f"\n📸 Gerando Chips Piloto | Classe: '{classification}' | {num_segs} superpixels | Composição: '{composition.upper()}'", flush=True)
-
-    prefix = PREFIX_MAP.get(composition.lower(), 0)
-    color_bgr = obter_cor_contorno()
-
-    output_dir_full = os.path.join(dir_output, f"AE-X{code_muni}", f"{classification}_sort_hor", composition)
-    os.makedirs(output_dir_full, exist_ok=True)
-
-    nrows, ncols = img.shape[:2]
-
-    for i, seg_val in enumerate(tqdm(unique_segments_sort, desc=f" {classification}/{composition}")):
-        hor_seg = hors_sort[i]
-        seg_mask = (img_slic == seg_val).astype(np.uint8)
-        
-        rows, cols = np.where(seg_mask > 0)
-        if len(rows) == 0:
-            continue
-
-        min_r, max_r = rows.min(), rows.max()
-        min_c, max_c = cols.min(), cols.max()
-
-        first_row = max(0, min_r - BORDER)
-        last_row = min(nrows - 1, max_r + BORDER)
-        first_col = max(0, min_c - BORDER)
-        last_col = min(ncols - 1, max_c + BORDER)
-
-        newimg = img.copy()
-        contours, _ = cv2.findContours(seg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-        cv2.drawContours(newimg, contours, -1, color_bgr, thickness=2)
-
-        subimg = newimg[first_row:last_row + 1, first_col:last_col + 1]
-
-        if subimg.size > 0:
-            zoomimg = cv2.resize(subimg, None, fx=ZOOM_PARAM, fy=ZOOM_PARAM, interpolation=cv2.INTER_CUBIC)
-            filename = f"{prefix}_p_{i:02d}_task_{int(seg_val)}_HoR_{hor_seg:.4f}_{composition}.png"
-            output_filepath = os.path.join(output_dir_full, filename)
-            cv2.imwrite(output_filepath, zoomimg)
-
-    del img, img_slic, df, df_raw
-    gc.collect()
-
-def disparar_script_086(script_086_path, code_muni, ano_inicio, ano_fim):
-    print("\n🔄 Disparando execução automática do Script 08.6 (Geração do Manifesto Zooniverse)...", flush=True)
-    if os.path.exists(script_086_path):
-        cmd = [sys.executable, script_086_path, code_muni, ano_inicio, ano_fim]
-        res = subprocess.run(cmd)
-        if res.returncode == 0:
-            print("✅ Script 08.6 concluído com sucesso!")
-        else:
-            print(f"⚠️ Erro ao executar Script 08.6: Código {res.returncode}")
-    else:
-        print(f"⚠️ Script 08.6 não localizado em: {script_086_path}")
+def normalizar_8bits(array):
+    """Normaliza matriz radiométrica para o intervalo 0-255 (uint8) com stretch 2-98%."""
+    valid_mask = array > 0
+    if not np.any(valid_mask):
+        return np.zeros(array.shape, dtype=np.uint8)
+    p2, p98 = np.percentile(array[valid_mask], (2, 98))
+    if p98 == p2:
+        p98 = p2 + 1.0
+    norm = np.clip((array - p2) / (p98 - p2) * 255.0, 0, 255)
+    return norm.astype(np.uint8)
 
 def main():
     if len(sys.argv) < 4:
         print("❌ Erro: Parâmetros insuficientes.")
-        print("Uso correto: python 08.5-gerarImagensSegmentosZooniverse.py <code_muni> <ano_inicio> <ano_fim>")
+        print("Uso correto: python 08.1-preparacaoDados.py <code_muni> <ano_inicio> <ano_fim>")
         sys.exit(1)
 
     code_muni = str(sys.argv[1])
@@ -161,41 +61,95 @@ def main():
         diretorio_scripts = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(diretorio_scripts)
 
+    path_shp_3classes = os.path.join(project_root, "data", "output", "segmentation", ano_fim, f"{code_muni}_Segmentacao_3Classes_{ano_fim}.shp")
+    path_cbers = os.path.join(project_root, "data", "output", "pansharpening", ano_fim, f"{code_muni}_{ano_fim}_CBERS_TRUE_COLOR_2M.tif")
+
     dir_processing = os.path.join(project_root, "data", "processing")
-    dir_proc_slics = os.path.join(dir_processing, "slics")
-    dir_csv_root = os.path.join(dir_processing, "csv")
-    
-    dir_csv_forest = os.path.join(dir_csv_root, "forest")
-    dir_csv_non_forest = os.path.join(dir_csv_root, "non-forest")
+    dir_slics = os.path.join(dir_processing, "slics")
+    dir_rgb = os.path.join(dir_processing, "rgb")
+    dir_ndvi = os.path.join(dir_processing, "ndvi")
+    dir_nir = os.path.join(dir_processing, "nir")
 
-    dir_output_zooniverse = os.path.join(project_root, "out_workflow", "all_segs")
-    path_slic = os.path.join(dir_proc_slics, f"mask_slic_{code_muni}_{ano_fim}.npy")
+    for d in [dir_slics, dir_rgb, dir_ndvi, dir_nir]:
+        os.makedirs(d, exist_ok=True)
 
-    diretorio_atual = os.path.dirname(os.path.abspath(__file__))
-    script_086_path = os.path.join(diretorio_atual, "08.6-gerarManifestoZooniverse.py")
-    if not os.path.exists(script_086_path):
-        script_086_path = os.path.join(project_root, "scripts", "08.6-gerarManifestoZooniverse.py")
+    path_matriz_out = os.path.join(dir_slics, f"matriz_classes_{code_muni}_{ano_fim}.npy")
+    path_png_rgb = os.path.join(dir_rgb, f"{code_muni}_rgb_{ano_fim}.png")
+    path_png_ndvi = os.path.join(dir_ndvi, f"{code_muni}_ndvi_{ano_fim}.png")
+    path_png_nir = os.path.join(dir_nir, f"{code_muni}_nir_{ano_fim}.png")
 
-    if not os.path.exists(path_slic):
-        print(f"❌ [ERRO CRÍTICO] Matriz SLIC (.npy) não encontrada: {path_slic}")
+    if not os.path.exists(path_shp_3classes) or not os.path.exists(path_cbers):
+        print(f"❌ Erro Crítico: Arquivos de entrada ausentes:")
+        print(f" - Shapefile: {path_shp_3classes}")
+        print(f" - Raster CBERS: {path_cbers}")
         sys.exit(1)
 
-    classifications = ['forest', 'non-forest']
-    compositions = ['rgb', 'ndvi', 'nir']
+    print("=" * 80)
+    print(f"🚀 PREPARAÇÃO DE DADOS (3 CLASSES -> SLIC BASE) - IBGE {code_muni} ({ano_fim})")
+    print("=" * 80)
 
-    print("=" * 80, flush=True)
-    print(f"🚀 EXECUÇÃO EXCLUSIVA - CAMPANHA PILOTO (100 SUPERPIXELS) ({ano_fim})", flush=True)
-    print("=" * 80, flush=True)
+    # 1. Leitura de metadados do CBERS
+    print("1. Lendo cena raster CBERS-4A (2m)...")
+    with rasterio.open(path_cbers) as src:
+        cbers_shape = (src.height, src.width)
+        cbers_crs = src.crs
+        cbers_transform = src.transform
+        num_bands = src.count
 
-    for classification in classifications:
-        path_csv = os.path.join(dir_csv_forest if classification == 'forest' else dir_csv_non_forest, f"df_{classification}_sort_{code_muni}_{ano_fim}.csv")
-        for composition in compositions:
-            processar_chips_piloto(code_muni, ano_fim, classification, composition, path_slic, path_csv, dir_processing, dir_output_zooniverse)
+        band_r = src.read(1).astype(np.float32)
+        band_g = src.read(2).astype(np.float32)
+        band_b = src.read(3).astype(np.float32)
+        band_nir = src.read(4).astype(np.float32) if num_bands >= 4 else None
 
-    # Dispara a geração de manifestos do Zooniverse e encerra
-    disparar_script_086(script_086_path, code_muni, ano_inicio, ano_fim)
+    # 2. Leitura e rasterização do Shapefile 3 Classes
+    print("2. Rasterizando Shapefile 3 Classes (Floresta=1, Não-Floresta=2, Não Segmentar=0)...")
+    gdf_3classes = gpd.read_file(path_shp_3classes).to_crs(cbers_crs)
 
-    print(f"\n🎉 EXECUÇÃO PILOTO CONCLUÍDA! 100 superpixels processados e manifestos gerados com sucesso.")
+    col_classe = "class_name" if "class_name" in gdf_3classes.columns else ("classe" if "classe" in gdf_3classes.columns else None)
+    if not col_classe:
+        col_classe = gdf_3classes.columns[0]
+
+    gdf_floresta = gdf_3classes[gdf_3classes[col_classe].astype(str).str.contains("Floresta", case=False, na=False) & 
+                                ~gdf_3classes[col_classe].astype(str).str.contains("Nao", case=False, na=False)]
+    
+    gdf_nao_floresta = gdf_3classes[gdf_3classes[col_classe].astype(str).str.contains("Nao_Floresta|Não_Floresta|Nao Floresta", case=False, na=False)]
+
+    matriz_classes = np.zeros(cbers_shape, dtype=np.uint8)
+
+    if not gdf_floresta.empty:
+        shapes_flor = [(geom, 1) for geom in gdf_floresta.geometry if geom.is_valid]
+        mask_flor = rasterize(shapes_flor, out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8)
+        matriz_classes[mask_flor == 1] = 1
+
+    if not gdf_nao_floresta.empty:
+        shapes_nflor = [(geom, 2) for geom in gdf_nao_floresta.geometry if geom.is_valid]
+        mask_nflor = rasterize(shapes_nflor, out_shape=cbers_shape, transform=cbers_transform, fill=0, dtype=np.uint8)
+        matriz_classes[mask_nflor == 2] = 2
+
+    np.save(path_matriz_out, matriz_classes)
+    print(f" ✅ Matriz de classes salva em: {path_matriz_out}")
+
+    # 3. Geração das composições 8-bit PNG
+    print("3. Exportando composições visuais RGB, NDVI e NIR em formato PNG...")
+    r_8 = normalizar_8bits(band_r)
+    g_8 = normalizar_8bits(band_g)
+    b_8 = normalizar_8bits(band_b)
+    img_rgb = cv2.merge([b_8, g_8, r_8])
+    cv2.imwrite(path_png_rgb, img_rgb)
+
+    if band_nir is not None:
+        nir_8 = normalizar_8bits(band_nir)
+        img_nir = cv2.merge([g_8, r_8, nir_8])  # Falsa Cor NIR
+        cv2.imwrite(path_png_nir, img_nir)
+
+        denom = band_nir + band_r
+        denom[denom == 0] = 1e-6
+        ndvi = (band_nir - band_r) / denom
+        ndvi_scaled = np.clip((ndvi + 1.0) / 2.0 * 255.0, 0, 255).astype(np.uint8)
+        img_ndvi = cv2.merge([ndvi_scaled, ndvi_scaled, ndvi_scaled])
+        cv2.imwrite(path_png_ndvi, img_ndvi)
+
+    print("🎉 Etapa 08.1 concluída com sucesso!")
 
 if __name__ == "__main__":
     main()
