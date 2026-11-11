@@ -2,7 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 ==============================================================================
-Etapa 08.6: Estruturação de Tarefas Multi-Composição e Manifesto Zooniverse
+Etapa 08.6: Estruturação de Tarefas e Manifesto Zooniverse (Execução Manual)
+==============================================================================
+Descrição:
+ - Agrupa todos os chips PNG salvos em `out_workflow/all_segs/` em tarefas de 10 itens.
+ - Move os arquivos para a estrutura `out_workflow/cbers_workflow/{area}/{classe}/task_{id}/`.
+ - Compila o arquivo `manifest.csv` para cada pasta de tarefa gerada.
 ==============================================================================
 """
 
@@ -15,7 +20,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 def rename_files_list(file_list):
-    """Garante a formatação uniforme de dígitos."""
+    """Garante a padronização de dígitos nos nomes dos arquivos."""
     for file_path in file_list:
         nome_figura = os.path.basename(file_path)
         novo_nome = re.sub(r'_(\d{1})_', r'_0\1_', nome_figura)
@@ -23,6 +28,7 @@ def rename_files_list(file_list):
             os.rename(file_path, os.path.join(os.path.dirname(file_path), novo_nome))
 
 def get_next_task_id(workflow_path):
+    """Retorna o próximo ID de tarefa disponível na estrutura do workflow."""
     existing_tasks = glob(os.path.join(workflow_path, '*', '*', 'task_*'))
     max_id = 0
     for t_path in existing_tasks:
@@ -49,7 +55,7 @@ def main():
         project_root = os.path.dirname(diretorio_scripts)
 
     print("=" * 80, flush=True)
-    print(f"🚀 SCRIPT 08.6 - MONTAGEM DE TAREFAS E MANIFESTOS MULTI-COMPOSIÇÃO ({ano_fim})", flush=True)
+    print(f"🚀 SCRIPT 08.6 - MONTAGEM DE TAREFAS E MANIFESTOS ZOONIVERSE ({ano_fim})", flush=True)
     print("=" * 80, flush=True)
 
     IMAGES_PER_TASK = 10
@@ -58,7 +64,12 @@ def main():
     workflow_path = os.path.join(project_root, 'out_workflow', 'cbers_workflow')
     os.makedirs(workflow_path, exist_ok=True)
 
-    # 1. Agrupamento dinâmico por tarefa
+    if not all_segs_path:
+        print(f"⚠️ Nenhuma área encontrada em: {os.path.join(project_root, 'out_workflow', 'all_segs')}")
+        print("Certifique-se de ter executado o Script 08.5 antes de rodar o 08.6.")
+        sys.exit(1)
+
+    # 1. Agrupamento dinâmico e movimentação dos arquivos por tarefa
     for area_path in all_segs_path:
         area_name = os.path.basename(area_path)
         
@@ -87,7 +98,7 @@ def main():
                     for file_path in chunk:
                         shutil.move(file_path, task_dir)
 
-    # 2. Geração do manifesto CSV (Colunas: RGB, NDVI, NIR)
+    # 2. Geração dos arquivos manifest.csv
     scenes_path = sorted(glob(os.path.join(workflow_path, '*')))
     total_manifests = 0
 
@@ -117,7 +128,7 @@ def main():
                 dataframe.to_csv(manifest_path, index=False)
                 total_manifests += 1
                 
-    print(f'✅ Total de {total_manifests} manifestos gerados com sucesso!')
+    print(f'✅ Concluído! Total de {total_manifests} manifestos gerados com sucesso em:\n   {workflow_path}')
 
 if __name__ == "__main__":
     main()
