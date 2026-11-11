@@ -1,3 +1,11 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+==============================================================================
+Etapa 08.4: Cálculo de HoR, Correção de Classes e Relatório Formatado em TXT
+==============================================================================
+"""
+
 import sys
 import os
 import gc
@@ -37,12 +45,14 @@ def main():
     dir_proc_masks_npy = os.path.join(dir_processing, "masks", "npy_truth_masks")
     dir_proc_slics = os.path.join(dir_processing, "slics")
     dir_csv_root = os.path.join(dir_processing, "csv")
+    dir_reports = os.path.join(project_root, "reports")
     
     dir_csv_forest = os.path.join(dir_csv_root, "forest")
     dir_csv_non_forest = os.path.join(dir_csv_root, "non-forest")
 
     os.makedirs(dir_csv_forest, exist_ok=True)
     os.makedirs(dir_csv_non_forest, exist_ok=True)
+    os.makedirs(dir_reports, exist_ok=True)
 
     path_slic = os.path.join(dir_proc_slics, f"mask_slic_{code_muni}_{ano_fim}.npy")
     path_mask_gt = os.path.join(dir_proc_masks_npy, f"{code_muni}_GT_3Classes_{ano_fim}.npy")
@@ -55,7 +65,7 @@ def main():
         sys.exit(1)
 
     print("=" * 80, flush=True)
-    print(f"🚀 SCRIPT 08.4 - CÁLCULO DE HoR E CORREÇÃO DE MAPEAMENTO DE CLASSE ({ano_fim})", flush=True)
+    print(f"🚀 SCRIPT 08.4 - CÁLCULO DE HoR E RELATÓRIO FORMATADO ({ano_fim})", flush=True)
     print("=" * 80, flush=True)
 
     img_slic = np.load(path_slic)
@@ -74,13 +84,9 @@ def main():
 
     pixel_counts = np.bincount(slic_valid, minlength=max_label + 1)
     
-    # --------------------------------------------------------------------------
-    # MAPEAMENTO CORRIGIDO DAS CLASSES DO SHAPEFILE:
-    # GT = 1 -> Floresta (Verde)
-    # GT = 2 -> Nao_Floresta (Vermelho)
-    # --------------------------------------------------------------------------
-    nfp_counts = np.bincount(slic_valid, weights=(gt_valid == 1).astype(np.int64), minlength=max_label + 1)  # Floresta
-    nnp_counts = np.bincount(slic_valid, weights=(gt_valid == 2).astype(np.int64), minlength=max_label + 1)  # Nao_Floresta
+    # GT = 1 -> Floresta (Verde), GT = 2 -> Nao_Floresta (Vermelho)
+    nfp_counts = np.bincount(slic_valid, weights=(gt_valid == 1).astype(np.int64), minlength=max_label + 1)
+    nnp_counts = np.bincount(slic_valid, weights=(gt_valid == 2).astype(np.int64), minlength=max_label + 1)
 
     NFP = nfp_counts[unique_labels]
     NNP = nnp_counts[unique_labels]
@@ -90,7 +96,6 @@ def main():
     max_pixels = np.maximum(NFP, NNP)
     hor_array = np.where(NP > 0, max_pixels / NP, 0.0)
 
-    # Definição semântica correta
     class_str = np.where(NFP > NNP, "forest", np.where(NNP > NFP, "non forest", "other"))
 
     good_mask = (size_segs >= MIN_SIZE_SEG_THRESHOLD) & (size_segs <= MAX_SIZE_SEG_THRESHOLD) & (hor_array >= MIN_HOR_THRESHOLD) & np.isin(class_str, ["forest", "non forest"])
@@ -98,12 +103,51 @@ def main():
     good_segs = int(np.sum(good_mask))
     bad_segs = total_segs - good_segs
 
-    print(f"\n📊 RESUMO DA FILTRAGEM HOR:")
-    print(f" -> Total Superpixels: {total_segs:,}")
-    print(f" -> Superpixels Aprovados (HoR >= 0.7): {good_segs:,}")
-    print(f" -> Superpixels Rejeitados: {bad_segs:,}")
+    # --------------------------------------------------------------------------
+    # MÉTRICAS DO RELATÓRIO
+    # --------------------------------------------------------------------------
+    mask_forest = (class_str == "forest")
+    mask_non_forest = (class_str == "non forest")
 
-    # Atualiza segmentos rejeitados para -1
+    total_forest = int(np.sum(mask_forest))
+    total_non_forest = int(np.sum(mask_non_forest))
+    total_geral = total_segs
+
+    app_forest = int(np.sum(good_mask & mask_forest))
+    app_non_forest = int(np.sum(good_mask & mask_non_forest))
+    app_geral = good_segs
+
+    rej_forest = total_forest - app_forest
+    rej_non_forest = total_non_forest - app_non_forest
+    rej_geral = bad_segs
+
+    hor_med_forest = float(np.mean(hor_array[mask_forest])) if total_forest > 0 else 0.0
+    hor_med_non_forest = float(np.mean(hor_array[mask_non_forest])) if total_non_forest > 0 else 0.0
+    hor_med_geral = float(np.mean(hor_array)) if total_geral > 0 else 0.0
+
+    # --------------------------------------------------------------------------
+    # MONTAGEM DA TABELA FORMATADA EM TXT
+    # --------------------------------------------------------------------------
+    sep = "-" * 78
+    report_lines = [
+        sep,
+        f"|{'Items':<34}|{' Floresta ':<10}|{' Não Floresta ':<14}|{' Geral ou Total':<15}|",
+        sep,
+        f"|{'Total Superpixels':<34}|{total_forest:^10}|{total_non_forest:^14}|{total_geral:^15}|",
+        sep,
+        f"|{'Superpixels Aprovados (HoR >= 0.7)':<34}|{app_forest:^10}|{app_non_forest:^14}|{app_geral:^15}|",
+        sep,
+        f"|{'Superpixels Rejeitados':<34}|{rej_forest:^10}|{rej_non_forest:^14}|{rej_geral:^15}|",
+        sep,
+        f"|{'HoR Médio Geral':<34}|{hor_med_forest:^10.4f}|{hor_med_non_forest:^14.4f}|{hor_med_geral:^15.4f}|",
+        sep
+    ]
+
+    out_txt_report = os.path.join(dir_reports, f"relatorio_hor_{code_muni}_{ano_fim}.txt")
+    with open(out_txt_report, "w", encoding="utf-8") as f:
+        f.write("\n".join(report_lines) + "\n")
+
+    # Atualiza segmentos rejeitados para -1 na matriz SLIC
     bad_labels = unique_labels[~good_mask]
     if len(bad_labels) > 0:
         mask_to_bad = np.isin(img_slic, bad_labels)
@@ -130,9 +174,9 @@ def main():
     df_forest.to_csv(out_csv_forest, index=False)
     df_non_forest.to_csv(out_csv_non_forest, index=False)
 
+    print(f"\n📊 TABELA GERADA EM {out_txt_report}:")
+    print("\n".join(report_lines))
     print(f"\n✅ SUCESSO! Script 08.4 concluído.")
-    print(f" -> Total Floresta: {len(df_forest):,} | Salvo em: {out_csv_forest}")
-    print(f" -> Total Nao_Floresta: {len(df_non_forest):,} | Salvo em: {out_csv_non_forest}")
 
 if __name__ == "__main__":
     main()

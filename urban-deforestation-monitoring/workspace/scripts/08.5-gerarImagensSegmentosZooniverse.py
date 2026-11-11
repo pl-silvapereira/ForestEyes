@@ -2,14 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 ==============================================================================
-Etapa 08.5: Geração Completa de Chips Zooniverse (Sem Limite de Imagens)
-==============================================================================
-Descrição:
- - Processa TODOS os superpixels aprovados no Script 08.4 para cada classe
-   ('forest' e 'non-forest') e composições ('rgb', 'ndvi', 'nir').
- - Desenha os contornos dos superpixels em amarelo fluorescente (2px),
-   aplica zoom de 2.5x e salva os chips PNG na área de transição (out_workflow/all_segs).
- - O Script 08.6 NÃO é chamado automaticamente; deve ser executado manualmente a seguir.
+Etapa 08.5: Geração de Chips Multi-Composição e Tarefa Unificada (Alta Performance)
 ==============================================================================
 """
 
@@ -19,48 +12,48 @@ import gc
 import warnings
 import duckdb
 
-# Compatibilidade DuckDB / geobr no Python 3.13
 if not hasattr(duckdb.DuckDBPyRelation, "fetchone"):
     duckdb.DuckDBPyRelation.fetchone = lambda self: self.fetchall()[0]
 
 import cv2
 import numpy as np
 import pandas as pd
+from scipy.ndimage import find_objects
 from tqdm import tqdm
 from dotenv import load_dotenv
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
 ZOOM_PARAM = 2.5
-BORDER = 60  # Borda de contexto de 60px (120m no terreno)
-
-PREFIX_MAP = {
-    'rgb': 0,
-    'ndvi': 1,
-    'nir': 2
-}
+BORDER = 60  # Borda de contexto (120m no terreno)
 
 def obter_cor_contorno():
-    # Amarelo Fluorescente Vivo em BGR (0, 255, 255)
-    return (0, 255, 255)
+    return (0, 255, 255)  # Amarelo Fluorescente em BGR
 
-def processar_todos_chips(code_muni, ano_fim, classification, composition, path_slic, path_csv, dir_processing, dir_output):
+def carregar_imagem_bgr(caminho):
+    if not os.path.exists(caminho):
+        return None
+    img = cv2.imread(caminho)
+    if img is not None and len(img.shape) == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    return img
+
+def processar_superpixels_otimizado(code_muni, ano_fim, classification, path_slic, path_csv, dir_processing, dir_workflow):
     if not os.path.exists(path_csv):
         print(f"⚠️ [AVISO] CSV não encontrado: {path_csv}. Pulando classe '{classification}'...")
         return
 
-    dir_comp = os.path.join(dir_processing, composition)
-    path_img_comp = os.path.join(dir_comp, f"{code_muni}_{composition}_{ano_fim}.png")
-    
-    if not os.path.exists(path_img_comp):
-        path_img_comp = os.path.join(dir_processing, "rgb", f"{code_muni}_rgb_{ano_fim}.png")
+    # 1. Carrega as 3 composições base para a RAM
+    path_rgb = os.path.join(dir_processing, "rgb", f"{code_muni}_rgb_{ano_fim}.png")
+    path_ndvi = os.path.join(dir_processing, "ndvi", f"{code_muni}_ndvi_{ano_fim}.png")
+    path_nir = os.path.join(dir_processing, "nir", f"{code_muni}_nir_{ano_fim}.png")
 
-    if not os.path.exists(path_img_comp):
-        print(f"⚠️ [AVISO] Imagem de entrada ausente: {path_img_comp}. Pulando...")
-        return
+    img_rgb = carregar_imagem_bgr(path_rgb)
+    img_ndvi = carregar_imagem_bgr(path_ndvi)
+    img_nir = carregar_imagem_bgr(path_nir)
 
-    img = cv2.imread(path_img_comp)
-    if img is None:
+    if img_rgb is None or img_ndvi is None or img_nir is None:
+        print(f"❌ [ERRO CRÍTICO] Imagens base (RGB, NDVI, NIR) ausentes em {dir_processing}.")
         return
 
     img_slic = np.load(path_slic)
@@ -74,45 +67,82 @@ def processar_todos_chips(code_muni, ano_fim, classification, composition, path_
     hors_sort = df["HoR"].values
     num_segs = len(unique_segments_sort)
 
-    print(f"\n📸 Processando TODOS os chips | Classe: '{classification}' | Total: {num_segs:,} superpixels | Composição: '{composition.upper()}'", flush=True)
+    print(f"\n⚡ Precalculando Bounding Boxes de todos os superpixels...", flush=True)
+    # Pré-cálculo O(1) de localização para eliminar o gargalo do np.where
+    slices = find_objects(img_slic)
 
-    prefix = PREFIX_MAP.get(composition.lower(), 0)
     color_bgr = obter_cor_contorno()
+    nrows, ncols = img_rgb.shape[:2]
+    max_label_slic = len(slices)
 
-    output_dir_full = os.path.join(dir_output, f"AE-X{code_muni}", f"{classification}_sort_hor", composition)
-    os.makedirs(output_dir_full, exist_ok=True)
+    dir_class_target = os.path.join(dir_workflow, f"AE-X{code_muni}", classification)
+    os.makedirs(dir_class_target, exist_ok=True)
 
-    nrows, ncols = img.shape[:2]
+    print(f"📸 Processando {num_segs:,} superpixels | Classe: '{classification}'", flush=True)
 
-    for i, seg_val in enumerate(tqdm(unique_segments_sort, desc=f" {classification}/{composition}")):
+    for i, seg_val in enumerate(tqdm(unique_segments_sort, desc=f" Processando {classification}")):
         hor_seg = hors_sort[i]
-        seg_mask = (img_slic == seg_val).astype(np.uint8)
-        
-        rows, cols = np.where(seg_mask > 0)
-        if len(rows) == 0:
+        seg_int = int(seg_val)
+
+        if seg_int < 1 or seg_int > max_label_slic:
             continue
 
-        min_r, max_r = rows.min(), rows.max()
-        min_c, max_c = cols.min(), cols.max()
+        loc = slices[seg_int - 1]
+        if loc is None:
+            continue
+
+        # Recorte local instantâneo O(1)
+        min_r, max_r = loc[0].start, loc[0].stop
+        min_c, max_c = loc[1].start, loc[1].stop
 
         first_row = max(0, min_r - BORDER)
         last_row = min(nrows - 1, max_r + BORDER)
         first_col = max(0, min_c - BORDER)
         last_col = min(ncols - 1, max_c + BORDER)
 
-        newimg = img.copy()
-        contours, _ = cv2.findContours(seg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-        cv2.drawContours(newimg, contours, -1, color_bgr, thickness=2)
+        # Extração da máscara local apenas na caixa delimitadora do recorte
+        sub_slic = img_slic[first_row:last_row + 1, first_col:last_col + 1]
+        sub_mask = (sub_slic == seg_int).astype(np.uint8)
 
-        subimg = newimg[first_row:last_row + 1, first_col:last_col + 1]
+        contours, _ = cv2.findContours(sub_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        if not contours:
+            continue
 
-        if subimg.size > 0:
-            zoomimg = cv2.resize(subimg, None, fx=ZOOM_PARAM, fy=ZOOM_PARAM, interpolation=cv2.INTER_CUBIC)
-            filename = f"{prefix}_{i:05d}_task_{int(seg_val)}_HoR_{hor_seg:.4f}_{composition}.png"
-            output_filepath = os.path.join(output_dir_full, filename)
-            cv2.imwrite(output_filepath, zoomimg)
+        # Pasta de saída direta da tarefa no disco local
+        task_dir_name = f"task_{seg_int}"
+        task_dir_path = os.path.join(dir_class_target, task_dir_name)
+        os.makedirs(task_dir_path, exist_ok=True)
 
-    del img, img_slic, df
+        fn_rgb = f"0_task_{seg_int}_HoR_{hor_seg:.4f}_rgb.png"
+        fn_ndvi = f"1_task_{seg_int}_HoR_{hor_seg:.4f}_ndvi.png"
+        fn_nir = f"2_task_{seg_int}_HoR_{hor_seg:.4f}_nir.png"
+
+        # --- GERAÇÃO DAS COMPOSIÇÕES NO MESMO RECORTE LOCAL ---
+        # RGB
+        crop_rgb = img_rgb[first_row:last_row + 1, first_col:last_col + 1].copy()
+        cv2.drawContours(crop_rgb, contours, -1, color_bgr, thickness=2)
+        zoom_rgb = cv2.resize(crop_rgb, None, fx=ZOOM_PARAM, fy=ZOOM_PARAM, interpolation=cv2.INTER_CUBIC)
+        cv2.imwrite(os.path.join(task_dir_path, fn_rgb), zoom_rgb)
+
+        # NDVI
+        crop_ndvi = img_ndvi[first_row:last_row + 1, first_col:last_col + 1].copy()
+        cv2.drawContours(crop_ndvi, contours, -1, color_bgr, thickness=2)
+        zoom_ndvi = cv2.resize(crop_ndvi, None, fx=ZOOM_PARAM, fy=ZOOM_PARAM, interpolation=cv2.INTER_CUBIC)
+        cv2.imwrite(os.path.join(task_dir_path, fn_ndvi), zoom_ndvi)
+
+        # NIR
+        crop_nir = img_nir[first_row:last_row + 1, first_col:last_col + 1].copy()
+        cv2.drawContours(crop_nir, contours, -1, color_bgr, thickness=2)
+        zoom_nir = cv2.resize(crop_nir, None, fx=ZOOM_PARAM, fy=ZOOM_PARAM, interpolation=cv2.INTER_CUBIC)
+        cv2.imwrite(os.path.join(task_dir_path, fn_nir), zoom_nir)
+
+        # --- GERAÇÃO DIRETA EM MEMÓRIA DO MANIFEST.CSV (Sem subprocess) ---
+        manifest_path = os.path.join(task_dir_path, "manifest.csv")
+        with open(manifest_path, "w", encoding="utf-8") as f_man:
+            f_man.write("id,0_rgb,1_ndvi,2_nir\n")
+            f_man.write(f"{task_dir_name},{fn_rgb},{fn_ndvi},{fn_nir}\n")
+
+    del img_rgb, img_ndvi, img_nir, img_slic, df, slices
     gc.collect()
 
 def main():
@@ -138,7 +168,8 @@ def main():
     dir_csv_forest = os.path.join(dir_csv_root, "forest")
     dir_csv_non_forest = os.path.join(dir_csv_root, "non-forest")
 
-    dir_output_zooniverse = os.path.join(project_root, "out_workflow", "all_segs")
+    # Armazena na memória/disco local do Colab para velocidade máxima
+    dir_workflow_local = "/content/out_workflow/cbers_workflow"
     path_slic = os.path.join(dir_proc_slics, f"mask_slic_{code_muni}_{ano_fim}.npy")
 
     if not os.path.exists(path_slic):
@@ -146,21 +177,23 @@ def main():
         sys.exit(1)
 
     classifications = ['forest', 'non-forest']
-    compositions = ['rgb', 'ndvi', 'nir']
 
     print("=" * 80, flush=True)
-    print(f"🚀 EXECUÇÃO COMPLETA - GERAÇÃO DE CHIPS DE SEGMENTOS ({ano_fim})", flush=True)
+    print(f"🚀 SCRIPT 08.5 - GERAÇÃO ULTRA-RÁPIDA MULTI-COMPOSIÇÃO ({ano_fim})", flush=True)
     print("=" * 80, flush=True)
 
     for classification in classifications:
-        path_csv = os.path.join(dir_csv_forest if classification == 'forest' else dir_csv_non_forest, f"df_{classification}_sort_{code_muni}_{ano_fim}.csv")
-        for composition in compositions:
-            processar_todos_chips(code_muni, ano_fim, classification, composition, path_slic, path_csv, dir_processing, dir_output_zooniverse)
+        path_csv = os.path.join(
+            dir_csv_forest if classification == 'forest' else dir_csv_non_forest,
+            f"df_{classification}_sort_{code_muni}_{ano_fim}.csv"
+        )
+        processar_superpixels_otimizado(
+            code_muni, ano_fim, classification, path_slic, path_csv,
+            dir_processing, dir_workflow_local
+        )
 
-    print(f"\n🎉 SCRIPT 08.5 CONCLUÍDO COM SUCESSO!")
-    print(f" -> Imagens salvas na área de transição: {dir_output_zooniverse}")
-    print(f" -> Próximo passo: execute manualmente o Script 08.6:")
-    print(f"    python 08.6-gerarManifestoZooniverse.py {code_muni} {ano_inicio} {ano_fim}")
+    print(f"\n🎉 PROCESSO CONCLUÍDO EM MINUTOS!")
+    print(f" -> Tarefas geradas em: {dir_workflow_local}")
 
 if __name__ == "__main__":
     main()
