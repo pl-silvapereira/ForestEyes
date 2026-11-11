@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 ==============================================================================
-Etapa 08.4: Cálculo de HoR, Correção de Classes e Relatório Formatado em TXT
+Etapa 08.4: Cálculo de HoR, Filtragem e Relatório Formatado em TXT
 ==============================================================================
 """
 
@@ -74,6 +74,7 @@ def main():
     flat_slic = img_slic.ravel()
     flat_gt = truth_mask.ravel()
 
+    # Considerar pixels válidos do SLIC (> 0)
     valid_idx = flat_slic > 0
     slic_valid = flat_slic[valid_idx]
     gt_valid = flat_gt[valid_idx]
@@ -147,12 +148,15 @@ def main():
     with open(out_txt_report, "w", encoding="utf-8") as f:
         f.write("\n".join(report_lines) + "\n")
 
-    # Atualiza segmentos rejeitados para -1 na matriz SLIC
+    # Salva uma cópia filtrada separadamente sem sobrescrever o mask_slic original
     bad_labels = unique_labels[~good_mask]
     if len(bad_labels) > 0:
-        mask_to_bad = np.isin(img_slic, bad_labels)
-        img_slic[mask_to_bad] = -1
-        np.save(path_slic, img_slic)
+        img_slic_filtered = img_slic.copy()
+        mask_to_bad = np.isin(img_slic_filtered, bad_labels)
+        img_slic_filtered[mask_to_bad] = -1
+        path_slic_filtered = os.path.join(dir_proc_slics, f"mask_slic_filtered_{code_muni}_{ano_fim}.npy")
+        np.save(path_slic_filtered, img_slic_filtered)
+        del img_slic_filtered
 
     region_tag = f"x{code_muni}"
     df_all = pd.DataFrame({
