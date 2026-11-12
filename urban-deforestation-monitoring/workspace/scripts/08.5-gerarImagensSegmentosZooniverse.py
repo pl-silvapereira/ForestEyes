@@ -9,6 +9,7 @@ Etapa 08.5: Geração de Chips Multi-Composição e Tarefa Unificada (Alta Perfo
 import sys
 import os
 import gc
+import shutil
 import warnings
 import duckdb
 
@@ -68,7 +69,6 @@ def processar_superpixels_otimizado(code_muni, ano_fim, classification, path_sli
     num_segs = len(unique_segments_sort)
 
     print(f"\n⚡ Precalculando Bounding Boxes de todos os superpixels...", flush=True)
-    # Pré-cálculo O(1) de localização para eliminar o gargalo do np.where
     slices = find_objects(img_slic)
 
     color_bgr = obter_cor_contorno()
@@ -91,7 +91,6 @@ def processar_superpixels_otimizado(code_muni, ano_fim, classification, path_sli
         if loc is None:
             continue
 
-        # Recorte local instantâneo O(1)
         min_r, max_r = loc[0].start, loc[0].stop
         min_c, max_c = loc[1].start, loc[1].stop
 
@@ -100,7 +99,6 @@ def processar_superpixels_otimizado(code_muni, ano_fim, classification, path_sli
         first_col = max(0, min_c - BORDER)
         last_col = min(ncols - 1, max_c + BORDER)
 
-        # Extração da máscara local apenas na caixa delimitadora do recorte
         sub_slic = img_slic[first_row:last_row + 1, first_col:last_col + 1]
         sub_mask = (sub_slic == seg_int).astype(np.uint8)
 
@@ -108,7 +106,6 @@ def processar_superpixels_otimizado(code_muni, ano_fim, classification, path_sli
         if not contours:
             continue
 
-        # Pasta de saída direta da tarefa no disco local
         task_dir_name = f"task_{seg_int}"
         task_dir_path = os.path.join(dir_class_target, task_dir_name)
         os.makedirs(task_dir_path, exist_ok=True)
@@ -117,7 +114,6 @@ def processar_superpixels_otimizado(code_muni, ano_fim, classification, path_sli
         fn_ndvi = f"1_task_{seg_int}_HoR_{hor_seg:.4f}_ndvi.png"
         fn_nir = f"2_task_{seg_int}_HoR_{hor_seg:.4f}_nir.png"
 
-        # --- GERAÇÃO DAS COMPOSIÇÕES NO MESMO RECORTE LOCAL ---
         # RGB
         crop_rgb = img_rgb[first_row:last_row + 1, first_col:last_col + 1].copy()
         cv2.drawContours(crop_rgb, contours, -1, color_bgr, thickness=2)
@@ -136,7 +132,7 @@ def processar_superpixels_otimizado(code_muni, ano_fim, classification, path_sli
         zoom_nir = cv2.resize(crop_nir, None, fx=ZOOM_PARAM, fy=ZOOM_PARAM, interpolation=cv2.INTER_CUBIC)
         cv2.imwrite(os.path.join(task_dir_path, fn_nir), zoom_nir)
 
-        # --- GERAÇÃO DIRETA EM MEMÓRIA DO MANIFEST.CSV (Sem subprocess) ---
+        # MANIFEST.CSV
         manifest_path = os.path.join(task_dir_path, "manifest.csv")
         with open(manifest_path, "w", encoding="utf-8") as f_man:
             f_man.write("id,0_rgb,1_ndvi,2_nir\n")
@@ -168,8 +164,14 @@ def main():
     dir_csv_forest = os.path.join(dir_csv_root, "forest")
     dir_csv_non_forest = os.path.join(dir_csv_root, "non-forest")
 
-    # Armazena na memória/disco local do Colab para velocidade máxima
-    dir_workflow_local = "/content/out_workflow/cbers_workflow"
+    # Caminho final exigido no PROJECT_ROOT/data/out_workflow/cbers_workflow
+    dir_workflow_final = os.path.join(project_root, "data", "out_workflow", "cbers_workflow")
+    os.makedirs(dir_workflow_final, exist_ok=True)
+
+    # Usa buffer rápido local se estiver no Google Colab e sincroniza ao final
+    em_colab = os.path.exists("/content")
+    dir_execucao = "/content/out_workflow/cbers_workflow" if em_colab else dir_workflow_final
+
     path_slic = os.path.join(dir_proc_slics, f"mask_slic_{code_muni}_{ano_fim}.npy")
 
     if not os.path.exists(path_slic):
@@ -180,6 +182,7 @@ def main():
 
     print("=" * 80, flush=True)
     print(f"🚀 SCRIPT 08.5 - GERAÇÃO ULTRA-RÁPIDA MULTI-COMPOSIÇÃO ({ano_fim})", flush=True)
+    print(f"📂 Destino Final: {dir_workflow_final}", flush=True)
     print("=" * 80, flush=True)
 
     for classification in classifications:
@@ -189,11 +192,15 @@ def main():
         )
         processar_superpixels_otimizado(
             code_muni, ano_fim, classification, path_slic, path_csv,
-            dir_processing, dir_workflow_local
+            dir_processing, dir_execucao
         )
 
-    print(f"\n🎉 PROCESSO CONCLUÍDO EM MINUTOS!")
-    print(f" -> Tarefas geradas em: {dir_workflow_local}")
+    if em_colab and os.path.abspath(dir_execucao) != os.path.abspath(dir_workflow_final):
+        print(f"\n🔄 Transferindo tarefas geradas para o Google Drive em:\n   {dir_workflow_final} ...", flush=True)
+        shutil.copytree(dir_execucao, dir_workflow_final, dirs_exist_ok=True)
+
+    print(f"\n🎉 PROCESSO CONCLUÍDO COM SUCESSO!")
+    print(f" -> Tarefas disponíveis em: {dir_workflow_final}")
 
 if __name__ == "__main__":
     main()
