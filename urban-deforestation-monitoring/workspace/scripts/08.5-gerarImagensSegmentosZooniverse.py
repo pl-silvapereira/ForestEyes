@@ -36,7 +36,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 ZOOM_PARAM = 2.5
 BORDER = 60        # Borda de contexto (120m no terreno)
-NUM_THREADS = 12   # 12 threads paralelas com 1 superpixel por thread a cada rodada
+NUM_THREADS = 1000   # 12 threads paralelas com 1 superpixel por thread a cada rodada
 
 
 def carregar_modulo_086(diretorio_scripts, project_root):
