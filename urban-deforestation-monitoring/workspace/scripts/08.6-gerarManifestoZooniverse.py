@@ -48,6 +48,8 @@ def processar_tarefa_segmento(project_root, code_muni, classification, seg_val, 
     if not files:
         return False
 
+    fn_rgb, fn_ndvi, fn_nir = "", "", ""
+
     # Move os 3 recortes PNG para a pasta definitiva da tarefa
     for file_name in files:
         src_file = os.path.join(dir_seg_temp, file_name)
@@ -56,25 +58,21 @@ def processar_tarefa_segmento(project_root, code_muni, classification, seg_val, 
             os.remove(dst_file)
         mover_com_retry(src_file, dst_file)
 
-    # Remove o diretório temporário do segmento para economizar espaço e inodes
+        lower_name = file_name.lower()
+        if "rgb" in lower_name:
+            fn_rgb = file_name
+        elif "ndvi" in lower_name:
+            fn_ndvi = file_name
+        elif "nir" in lower_name:
+            fn_nir = file_name
+
+    # Remove o diretório temporário do segmento
     try:
         os.rmdir(dir_seg_temp)
     except OSError:
         pass
 
-    # Montagem do manifest.csv unificado das 3 composições
-    task_files = sorted([f for f in os.listdir(target_task_dir) if f.endswith('.png')])
-    fn_rgb, fn_ndvi, fn_nir = "", "", ""
-
-    for f_name in task_files:
-        lower_name = f_name.lower()
-        if "rgb" in lower_name:
-            fn_rgb = f_name
-        elif "ndvi" in lower_name:
-            fn_ndvi = f_name
-        elif "nir" in lower_name:
-            fn_nir = f_name
-
+    # Grava o manifest.csv unificado das 3 composições
     manifest_path = os.path.join(target_task_dir, "manifest.csv")
     for tentativa in range(1, 5):
         try:
