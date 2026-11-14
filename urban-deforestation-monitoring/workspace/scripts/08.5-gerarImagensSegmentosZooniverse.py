@@ -2,14 +2,15 @@
 # -*- coding: utf-8 -*-
 """
 ==============================================================================
-Etapa 08.5: Geração Multi-Composição Sequencial no Google Drive + Disparo 08.6
+Etapa 08.5: Geração Multi-Composição em Micro-Lotes + Empacotamento no Drive
 ==============================================================================
 Descrição:
- - Execução estritamente sequencial (sem threads) para máxima estabilidade
-   de I/O no Google Drive FUSE.
- - Opera diretamente em PROJECT_ROOT/data/out_workflow/ (sem usar /content).
+ - Processa em micro-lotes de 10.000 superpixels (ocupa < 1 GB no Colab).
  - Para cada superpixel, gera RGB, NDVI e NIR no mesmo loop e aciona o
-   Script 08.6 antes de passar para o próximo superpixel.
+   Script 08.6 para montar task_{seg_int} e o manifest.csv unificado.
+ - Ao concluir cada micro-lote, empacota diretamente no Google Drive
+   (PROJECT_ROOT/data/out_workflow/cbers_workflow) e limpa o disco local.
+ - Possui checkpoint automático: pula lotes .zip já salvos no Drive.
 ==============================================================================
 """
 
@@ -17,6 +18,8 @@ import sys
 import os
 import gc
 import time
+import shutil
+import zipfile
 import warnings
 import importlib.util
 import duckdb
@@ -34,7 +37,8 @@ from dotenv import load_dotenv
 warnings.filterwarnings("ignore", category=UserWarning)
 
 ZOOM_PARAM = 2.5
-BORDER = 60  # Borda de contexto (120m no terreno)
+BORDER = 60          # Borda de contexto (120m no terreno)
+MICRO_BATCH = 10000  # 10 mil tarefas por pacote (~700 MB temporários no Colab)
 
 
 def carregar_modulo_086(diretorio_scripts, project_root):
@@ -62,22 +66,36 @@ def carregar_imagem_bgr(caminho):
     return img
 
 
-def salvar_png_com_retry(caminho, imagem, max_tentativas=5):
-    """Grava imagem PNG no Google Drive com retentativa em caso de oscilação FUSE."""
+def compactar_lote_para_drive(dir_origem_tasks, zip_destino_drive, max_tentativas=5):
+    """Grava o arquivo .zip diretamente no Google Drive com retentativa."""
+    os.makedirs(os.path.dirname(zip_destino_drive), exist_ok=True)
+    zip_temp_drive = zip_destino_drive + ".tmp"
+
     for tentativa in range(1, max_tentativas + 1):
         try:
-            sucesso = cv2.imwrite(caminho, imagem)
-            if sucesso and os.path.exists(caminho):
-                return True
+            with zipfile.ZipFile(zip_temp_drive, "w", compression=zipfile.ZIP_STORED) as zf:
+                for root, _, files in os.walk(dir_origem_tasks):
+                    for fname in files:
+                        full_path = os.path.join(root, fname)
+                        rel_path = os.path.relpath(full_path, dir_origem_tasks)
+                        zf.write(full_path, rel_path)
+            if os.path.exists(zip_destino_drive):
+                os.remove(zip_destino_drive)
+            os.rename(zip_temp_drive, zip_destino_drive)
+            return True
         except OSError:
-            pass
-        time.sleep(1.5 * tentativa)
-    raise IOError(f"Falha ao gravar arquivo no Google Drive após {max_tentativas} tentativas: {caminho}")
+            if os.path.exists(zip_temp_drive):
+                try:
+                    os.remove(zip_temp_drive)
+                except OSError:
+                    pass
+            time.sleep(2.0 * tentativa)
+    raise IOError(f"Falha ao gravar pacote ZIP no Google Drive: {zip_destino_drive}")
 
 
-def processar_superpixels_sequencial(
-    project_root, code_muni, ano_fim, classification,
-    path_slic, path_csv, dir_processing, base_out_workflow, mod_086
+def processar_superpixels_micro_lotes(
+    code_muni, ano_fim, classification,
+    path_slic, path_csv, dir_processing, dir_workflow_drive, mod_086
 ):
     if not os.path.exists(path_csv):
         print(f"⚠️ [AVISO] CSV não encontrado: {path_csv}. Pulando classe '{classification}'...")
@@ -107,83 +125,91 @@ def processar_superpixels_sequencial(
     nrows, ncols = img_rgb.shape[:2]
     max_label_slic = len(slices)
 
-    dir_staging_class = os.path.join(base_out_workflow, "all_segs", f"AE-X{code_muni}", classification)
-    dir_final_class = os.path.join(base_out_workflow, "cbers_workflow", f"AE-X{code_muni}", classification)
-    os.makedirs(dir_staging_class, exist_ok=True)
-    os.makedirs(dir_final_class, exist_ok=True)
-
-    # Checkpoint rápido em memória: lê o diretório final uma única vez
-    print(f"🔍 Verificando tarefas já concluídas no Google Drive...", flush=True)
-    pastas_existentes = set(os.listdir(dir_final_class))
-
-    tarefas_pendentes = []
+    # Filtra todos os segmentos válidos do CSV
+    itens_validos = []
     for seg_val, hor_seg in zip(df["Segment_label"].values, df["HoR"].values):
         seg_int = int(seg_val)
-        if seg_int < 1 or seg_int > max_label_slic:
-            continue
-        loc = slices[seg_int - 1]
-        if loc is None:
-            continue
-        if f"task_{seg_int}" in pastas_existentes:
-            if os.path.exists(os.path.join(dir_final_class, f"task_{seg_int}", "manifest.csv")):
-                continue
-        tarefas_pendentes.append((seg_int, float(hor_seg), loc))
+        if 1 <= seg_int <= max_label_slic and slices[seg_int - 1] is not None:
+            itens_validos.append((seg_int, float(hor_seg), slices[seg_int - 1]))
 
-    total_pendentes = len(tarefas_pendentes)
-    print(f"📸 Classe '{classification}': {total_pendentes:,} superpixels pendentes (Execução Sequencial)", flush=True)
+    total_itens = len(itens_validos)
+    total_lotes = (total_itens + MICRO_BATCH - 1) // MICRO_BATCH
+
+    dir_drive_class = os.path.join(dir_workflow_drive, f"AE-X{code_muni}", classification)
+    os.makedirs(dir_drive_class, exist_ok=True)
+
+    # Usa /content se estiver no Colab para velocidade local, limpando a cada micro-lote
+    raiz_temp = "/content/tmp_foresteyes_batch" if os.path.exists("/content") else os.path.join(dir_workflow_drive, "_tmp_batch")
+
+    print(f"📸 Classe '{classification}': {total_itens:,} superpixels divididos em {total_lotes} pacotes de até {MICRO_BATCH:,}", flush=True)
 
     color_bgr = (0, 255, 255)  # Amarelo Fluorescente em BGR
 
-    for idx, (seg_int, hor_seg, loc) in enumerate(tqdm(tarefas_pendentes, desc=f" {classification}")):
-        min_r, max_r = loc[0].start, loc[0].stop
-        min_c, max_c = loc[1].start, loc[1].stop
+    for idx_lote in range(total_lotes):
+        lote_num = idx_lote + 1
+        zip_nome = f"AE-X{code_muni}_{classification}_lote_{lote_num:03d}.zip"
+        zip_caminho_drive = os.path.join(dir_drive_class, zip_nome)
 
-        first_row = max(0, min_r - BORDER)
-        last_row = min(nrows - 1, max_r + BORDER)
-        first_col = max(0, min_c - BORDER)
-        last_col = min(ncols - 1, max_c + BORDER)
-
-        sub_slic = img_slic[first_row:last_row + 1, first_col:last_col + 1]
-        sub_mask = (sub_slic == seg_int).astype(np.uint8)
-
-        contours, _ = cv2.findContours(sub_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-        if not contours:
+        # Checkpoint: se o pacote ZIP deste lote já existe no Drive, pula instantaneamente
+        if os.path.exists(zip_caminho_drive) and os.path.getsize(zip_caminho_drive) > 0:
+            print(f" ⏭️ Lote [{lote_num}/{total_lotes}] já salvo no Drive ({zip_nome}). Pulando...", flush=True)
             continue
 
-        # 1. Cria pasta temporária exclusiva do segmento no Drive
-        dir_seg_temp = os.path.join(dir_staging_class, f"seg_{seg_int}")
-        os.makedirs(dir_seg_temp, exist_ok=True)
+        # Limpa qualquer resquício local anterior antes de iniciar o lote
+        if os.path.exists(raiz_temp):
+            shutil.rmtree(raiz_temp, ignore_errors=True)
+        os.makedirs(raiz_temp, exist_ok=True)
 
-        fn_rgb = f"0_task_{seg_int}_HoR_{hor_seg:.4f}_rgb.png"
-        fn_ndvi = f"1_task_{seg_int}_HoR_{hor_seg:.4f}_ndvi.png"
-        fn_nir = f"2_task_{seg_int}_HoR_{hor_seg:.4f}_nir.png"
+        inicio = idx_lote * MICRO_BATCH
+        fim = min(inicio + MICRO_BATCH, total_itens)
+        lote_atual = itens_validos[inicio:fim]
 
-        composicoes = [
-            (img_rgb, fn_rgb),
-            (img_ndvi, fn_ndvi),
-            (img_nir, fn_nir),
-        ]
+        desc_barra = f" Lote [{lote_num}/{total_lotes}] ({classification})"
+        for seg_int, hor_seg, loc in tqdm(lote_atual, desc=desc_barra):
+            min_r, max_r = loc[0].start, loc[0].stop
+            min_c, max_c = loc[1].start, loc[1].stop
 
-        # 2. Gera as 3 composições no mesmo loop do superpixel
-        for img_base, fn_out in composicoes:
-            crop = img_base[first_row:last_row + 1, first_col:last_col + 1].copy()
-            cv2.drawContours(crop, contours, -1, color_bgr, thickness=2)
-            zoom = cv2.resize(crop, None, fx=ZOOM_PARAM, fy=ZOOM_PARAM, interpolation=cv2.INTER_CUBIC)
-            salvar_png_com_retry(os.path.join(dir_seg_temp, fn_out), zoom)
+            first_row = max(0, min_r - BORDER)
+            last_row = min(nrows - 1, max_r + BORDER)
+            first_col = max(0, min_c - BORDER)
+            last_col = min(ncols - 1, max_c + BORDER)
 
-        # 3. Antes de ir para o próximo superpixel, chama o Script 08.6
-        #    (move imagens para task_{seg_int}, remove seg_{seg_int} e cria manifest.csv)
-        mod_086.processar_tarefa_segmento(project_root, code_muni, classification, seg_int, hor_seg)
+            sub_slic = img_slic[first_row:last_row + 1, first_col:last_col + 1]
+            sub_mask = (sub_slic == seg_int).astype(np.uint8)
 
-        if (idx + 1) % 1000 == 0:
-            gc.collect()
+            contours, _ = cv2.findContours(sub_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+            if not contours:
+                continue
 
-    try:
-        os.rmdir(dir_staging_class)
-    except OSError:
-        pass
+            # 1. Pasta temporária do segmento dentro do micro-lote
+            dir_seg_temp = os.path.join(raiz_temp, "all_segs", f"AE-X{code_muni}", classification, f"seg_{seg_int}")
+            os.makedirs(dir_seg_temp, exist_ok=True)
 
-    del img_rgb, img_ndvi, img_nir, img_slic, df, slices, tarefas_pendentes
+            fn_rgb = f"0_task_{seg_int}_HoR_{hor_seg:.4f}_rgb.png"
+            fn_ndvi = f"1_task_{seg_int}_HoR_{hor_seg:.4f}_ndvi.png"
+            fn_nir = f"2_task_{seg_int}_HoR_{hor_seg:.4f}_nir.png"
+
+            # 2. Gera as 3 composições no mesmo loop do superpixel
+            for img_base, fn_out in [(img_rgb, fn_rgb), (img_ndvi, fn_ndvi), (img_nir, fn_nir)]:
+                crop = img_base[first_row:last_row + 1, first_col:last_col + 1].copy()
+                cv2.drawContours(crop, contours, -1, color_bgr, thickness=2)
+                zoom = cv2.resize(crop, None, fx=ZOOM_PARAM, fy=ZOOM_PARAM, interpolation=cv2.INTER_CUBIC)
+                cv2.imwrite(os.path.join(dir_seg_temp, fn_out), zoom)
+
+            # 3. Antes de ir para o próximo superpixel, chama o Script 08.6
+            mod_086.processar_tarefa_segmento(raiz_temp, code_muni, classification, seg_int, hor_seg)
+
+        # 4. Grava o micro-lote inteiro como 1 arquivo ZIP direto no Google Drive
+        pasta_tasks_lote = os.path.join(raiz_temp, "cbers_workflow", f"AE-X{code_muni}", classification)
+        if os.path.exists(pasta_tasks_lote):
+            print(f" 📦 Salvando {zip_nome} diretamente no Google Drive...", flush=True)
+            compactar_lote_para_drive(pasta_tasks_lote, zip_caminho_drive)
+
+        # 5. Libera o espaço do micro-lote imediatamente antes do próximo
+        shutil.rmtree(raiz_temp, ignore_errors=True)
+        gc.collect()
+
+    del img_rgb, img_ndvi, img_nir, img_slic, df, slices, itens_validos
     gc.collect()
 
 
@@ -212,8 +238,8 @@ def main():
     dir_csv_forest = os.path.join(dir_csv_root, "forest")
     dir_csv_non_forest = os.path.join(dir_csv_root, "non-forest")
 
-    base_out_workflow = os.path.join(project_root, "data", "out_workflow")
-    os.makedirs(base_out_workflow, exist_ok=True)
+    dir_workflow_drive = os.path.join(project_root, "data", "out_workflow", "cbers_workflow")
+    os.makedirs(dir_workflow_drive, exist_ok=True)
 
     path_slic = os.path.join(dir_proc_slics, f"mask_slic_{code_muni}_{ano_fim}.npy")
     if not os.path.exists(path_slic):
@@ -223,8 +249,8 @@ def main():
     classifications = ['non-forest', 'forest']
 
     print("=" * 80, flush=True)
-    print(f"🚀 SCRIPT 08.5 - EXECUÇÃO SEQUENCIAL NO DRIVE + 08.6 POR SEGMENTO ({ano_fim})", flush=True)
-    print(f"📂 Destino Workflow: {os.path.join(base_out_workflow, 'cbers_workflow')}", flush=True)
+    print(f"🚀 SCRIPT 08.5 - MICRO-LOTES ({MICRO_BATCH}/lote) + 08.6 + PACOTES NO DRIVE ({ano_fim})", flush=True)
+    print(f"📂 Destino Final: {dir_workflow_drive}", flush=True)
     print("=" * 80, flush=True)
 
     for classification in classifications:
@@ -232,22 +258,13 @@ def main():
             dir_csv_forest if classification == 'forest' else dir_csv_non_forest,
             f"df_{classification}_sort_{code_muni}_{ano_fim}.csv"
         )
-        processar_superpixels_sequencial(
-            project_root, code_muni, ano_fim, classification,
-            path_slic, path_csv, dir_processing, base_out_workflow, mod_086
+        processar_superpixels_micro_lotes(
+            code_muni, ano_fim, classification,
+            path_slic, path_csv, dir_processing, dir_workflow_drive, mod_086
         )
 
-    for pasta_vazia in [
-        os.path.join(base_out_workflow, "all_segs", f"AE-X{code_muni}"),
-        os.path.join(base_out_workflow, "all_segs")
-    ]:
-        try:
-            os.rmdir(pasta_vazia)
-        except OSError:
-            pass
-
     print(f"\n🎉 PROCESSO CONCLUÍDO COM SUCESSO!")
-    print(f" -> Tarefas e manifestos salvos em: {os.path.join(base_out_workflow, 'cbers_workflow')}")
+    print(f" -> Pacotes salvos em: {dir_workflow_drive}")
 
 
 if __name__ == "__main__":

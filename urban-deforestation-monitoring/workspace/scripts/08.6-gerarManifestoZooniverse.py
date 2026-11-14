@@ -4,39 +4,23 @@
 ==============================================================================
 Etapa 08.6: Estruturação da Tarefa do Segmento e Manifesto Zooniverse
 ==============================================================================
-Descrição:
- - Opera diretamente em PROJECT_ROOT/data/out_workflow/.
- - Move as 3 composições (RGB, NDVI, NIR) da pasta temporária seg_{seg_val}
-   para a pasta definitiva task_{seg_val}, removendo a pasta temporária.
- - Gera o arquivo manifest.csv unificado contendo as 3 composições da tarefa.
-==============================================================================
 """
 
 import sys
 import os
-import time
 import shutil
 from glob import glob
 import pandas as pd
 from dotenv import load_dotenv
 
 
-def mover_com_retry(src_file, dst_file, max_tentativas=5):
-    """Move arquivo no Google Drive com retentativa para evitar falhas FUSE."""
-    for tentativa in range(1, max_tentativas + 1):
-        try:
-            shutil.move(src_file, dst_file)
-            return True
-        except OSError:
-            time.sleep(1.5 * tentativa)
-    raise IOError(f"Falha ao mover arquivo no Drive após {max_tentativas} tentativas: {src_file}")
-
-
-def processar_tarefa_segmento(project_root, code_muni, classification, seg_val, hor_seg=None):
+def processar_tarefa_segmento(base_out, code_muni, classification, seg_val, hor_seg=None):
     """Cria a pasta task_{seg_val}, move as 3 composições e gera o manifest.csv."""
-    base_out = os.path.join(project_root, "data", "out_workflow")
-    dir_seg_temp = os.path.join(base_out, "all_segs", f"AE-X{code_muni}", classification, f"seg_{seg_val}")
+    # Aceita tanto a raiz do micro-lote quanto o PROJECT_ROOT diretamente
+    if not os.path.exists(os.path.join(base_out, "all_segs")) and os.path.exists(os.path.join(base_out, "data", "out_workflow")):
+        base_out = os.path.join(base_out, "data", "out_workflow")
 
+    dir_seg_temp = os.path.join(base_out, "all_segs", f"AE-X{code_muni}", classification, f"seg_{seg_val}")
     if not os.path.exists(dir_seg_temp):
         return False
 
@@ -50,13 +34,12 @@ def processar_tarefa_segmento(project_root, code_muni, classification, seg_val, 
 
     fn_rgb, fn_ndvi, fn_nir = "", "", ""
 
-    # Move os 3 recortes PNG para a pasta definitiva da tarefa
     for file_name in files:
         src_file = os.path.join(dir_seg_temp, file_name)
         dst_file = os.path.join(target_task_dir, file_name)
         if os.path.exists(dst_file):
             os.remove(dst_file)
-        mover_com_retry(src_file, dst_file)
+        shutil.move(src_file, dst_file)
 
         lower_name = file_name.lower()
         if "rgb" in lower_name:
@@ -66,24 +49,17 @@ def processar_tarefa_segmento(project_root, code_muni, classification, seg_val, 
         elif "nir" in lower_name:
             fn_nir = file_name
 
-    # Remove o diretório temporário do segmento
     try:
         os.rmdir(dir_seg_temp)
     except OSError:
         pass
 
-    # Grava o manifest.csv unificado das 3 composições
     manifest_path = os.path.join(target_task_dir, "manifest.csv")
-    for tentativa in range(1, 5):
-        try:
-            with open(manifest_path, "w", encoding="utf-8") as f_man:
-                f_man.write("id,0_rgb,1_ndvi,2_nir\n")
-                f_man.write(f"{task_dir_name},{fn_rgb},{fn_ndvi},{fn_nir}\n")
-            return True
-        except OSError:
-            time.sleep(1.5 * tentativa)
+    with open(manifest_path, "w", encoding="utf-8") as f_man:
+        f_man.write("id,0_rgb,1_ndvi,2_nir\n")
+        f_man.write(f"{task_dir_name},{fn_rgb},{fn_ndvi},{fn_nir}\n")
 
-    return False
+    return True
 
 
 def varredura_completa(project_root, code_muni):
