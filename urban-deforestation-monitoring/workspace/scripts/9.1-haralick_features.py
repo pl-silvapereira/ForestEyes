@@ -4,6 +4,8 @@ import pandas as pd
 import mahotas as mh
 from tqdm import tqdm
 import rasterio
+from scipy.ndimage import find_objects
+from joblib import Parallel, delayed
 
 # ==============================================================================
 # 1. CONFIGURAÇÃO DO DIRETÓRIO RAIZ DO PROJETO
@@ -12,19 +14,51 @@ PROJECT_ROOT = '/content/drive/MyDrive/Mestrado/04-Projeto ForestEyes/ForestEyes
 
 
 # ==============================================================================
-# 2. FUNÇÃO DE CÁLCULO DOS DESCRITORES DE HARALICK
+# 2. FUNÇÃO AUXILIAR PARA UM ÚNICO SEGMENTO (RECORTADO POR BOUNDING BOX)
 # ==============================================================================
-def haralick(gray_image, segments):
-    """
-    Retorna um DataFrame com as features de Haralick e os IDs dos segmentos.
-    """
-    # Obtém IDs únicos dos segmentos
-    segment_ids = np.unique(segments)
+def _process_single_segment(segment_id, slice_obj, gray_image, segments, is_float_0_1):
+    if slice_obj is None:
+        return None
 
-    # Lista para armazenar os resultados
-    features_list = []
+    # Recorta apenas a caixa delimitadora (bounding box) do segmento
+    sub_mask = (segments[slice_obj] == segment_id)
+    if not np.any(sub_mask):
+        return None
 
-    # Nomes dos descritores de Haralick
+    sub_gray = gray_image[slice_obj]
+    segment_region = sub_gray * sub_mask
+
+    # Normaliza para [0, 255] uint8
+    if is_float_0_1:
+        normalized_segment = (segment_region * 255).astype(np.uint8)
+    else:
+        # Caso a imagem original venha em uint16 (ex: 0-1023 ou 0-10000), evita overflow
+        max_val = gray_image.max()
+        if max_val > 0:
+            normalized_segment = ((segment_region / max_val) * 255).astype(np.uint8)
+        else:
+            return None
+
+    if np.sum(normalized_segment) == 0:
+        return None
+
+    # Calcula os descritores de Haralick ignorando os pixels zero (fundo do recorte)
+    try:
+        haralick_features = mh.features.haralick(normalized_segment, ignore_zeros=True).mean(axis=0)
+        return [int(segment_id)] + haralick_features.tolist()
+    except ValueError:
+        # Ocorre apenas se o segmento tiver 1 único pixel isolado sem vizinhos
+        return None
+
+
+# ==============================================================================
+# 3. FUNÇÃO PRINCIPAL DE CÁLCULO DOS DESCRITORES DE HARALICK (OTIMIZADA)
+# ==============================================================================
+def haralick(gray_image, segments, n_jobs=-1):
+    """
+    Calcula os 13 descritores de Haralick por segmento utilizando recorte por
+    bounding box e processamento paralelo em CPU.
+    """
     haralick_feature_names = [
         "ASM", "Contrast", "Correlation", "Variance", "IDM",
         "Sum_Average", "Sum_Variance", "Sum_Entropy", "Entropy",
@@ -32,34 +66,31 @@ def haralick(gray_image, segments):
         "IMC1", "IMC2"
     ]
 
-    # Loop sobre cada segmento
-    for segment_id in tqdm(segment_ids):
+    # Encontra instantaneamente o bounding box de todos os IDs de segmentos (1 única passada na matriz)
+    slices = find_objects(segments)
 
-        # Cria uma máscara booleana para o segmento atual
-        mask = (segments == segment_id)
+    # Identifica os IDs válidos (ignorando 0, que representa o fundo filtrado)
+    segment_ids = np.unique(segments)
+    segment_ids = segment_ids[segment_ids > 0]
 
-        # Verifica se o segmento não está vazio
-        if np.sum(mask) == 0:
-            continue
+    # Verifica se a imagem já está normalizada entre 0 e 1
+    is_float_0_1 = np.issubdtype(gray_image.dtype, np.floating) and (gray_image.max() <= 1.0)
 
-        # Extrai a região do segmento (mantém os valores originais dos pixels cinzas.
-        # O restante vira 0, ao serem multiplicados por False)
-        segment_region = gray_image * mask
+    # Executa em paralelo usando todos os núcleos de CPU disponíveis (n_jobs=-1)
+    results = Parallel(n_jobs=n_jobs, prefer="threads")(
+        delayed(_process_single_segment)(
+            seg_id,
+            slices[seg_id - 1],
+            gray_image,
+            segments,
+            is_float_0_1
+        )
+        for seg_id in tqdm(segment_ids, desc="Extraindo Haralick")
+    )
 
-        # Normaliza a imagem para a faixa [0, 255]
-        normalized_segment = (segment_region * 255).astype(np.uint8)
+    # Filtra eventuais retornos nulos
+    features_list = [res for res in results if res is not None]
 
-        # Verifica se o segmento não é completamente vazio
-        if np.sum(normalized_segment) == 0:
-            continue
-
-        # Calcula os descritores de Haralick
-        haralick_features = mh.features.haralick(normalized_segment).mean(axis=0)
-
-        # Adiciona os resultados à lista
-        features_list.append([segment_id] + haralick_features.tolist())
-
-    # Cria um DataFrame com os resultados
     columns = ['Segment_id'] + haralick_feature_names
     features_df = pd.DataFrame(features_list, columns=columns)
 
@@ -67,7 +98,7 @@ def haralick(gray_image, segments):
 
 
 # ==============================================================================
-# 3. EXECUÇÃO PRINCIPAL
+# 4. EXECUÇÃO PRINCIPAL
 # ==============================================================================
 def main():
     methods = ['SLIC']
@@ -84,8 +115,8 @@ def main():
     for method in methods:
         print(f'Método: {method}')
 
-        for id_area, study_area in enumerate(study_areas):
-            # Lista com os caminhos das bandas do CBERS-4A
+        for study_area in study_areas:
+            # Atenção: ajuste o sufixo (_recortado.tif ou .tif) conforme os arquivos salvos na sua pasta
             bands_path = [
                 os.path.join(input_tif_dir, 'CBERS4A_WPM20214220240930_BAND0_recortado.tif'),
                 os.path.join(input_tif_dir, 'CBERS4A_WPM20214220240930_BAND1_recortado.tif'),
@@ -100,31 +131,32 @@ def main():
 
             segment_ids = np.unique(current_segmentation)
             print(f'Area de Estudo: {study_area}')
-            print(f'Shape da máscara: {current_segmentation.shape} | Segmentos únicos: {len(segment_ids)}')
+            print(f'Shape da máscara: {current_segmentation.shape} | Segmentos únicos (c/ fundo): {len(segment_ids)}')
 
-            # Cria a subpasta de saída dentro de workspace/data/ML caso ainda não exista
             output_area_dir = os.path.join(output_ml_dir, f'AE-{study_area}')
             os.makedirs(output_area_dir, exist_ok=True)
 
-            for id, tif_band in enumerate(bands_path):
+            for idx, tif_band in enumerate(bands_path):
+                if not os.path.exists(tif_band):
+                    print(f"Arquivo não encontrado: {tif_band}. Pulando...\n")
+                    continue
+
                 with rasterio.open(tif_band) as current_band_data:
                     current_band = current_band_data.read(1)
 
-                # Verifica compatibilidade de dimensões (H, W) entre a banda e a máscara SLIC
                 if current_band.shape != current_segmentation.shape:
                     print(
-                        f"AVISO: Shape da banda B{band_names[id]} {current_band.shape} "
+                        f"AVISO: Shape da banda B{band_names[idx]} {current_band.shape} "
                         f"difere da máscara {current_segmentation.shape}. Pulando banda...\n"
                     )
                     continue
 
                 print(f'Computando as features de Haralick para a banda: {tif_band}')
-                features_df = haralick(current_band, current_segmentation)
+                features_df = haralick(current_band, current_segmentation, n_jobs=-1)
 
-                # Salva o DataFrame em um arquivo CSV
                 output_csv_path = os.path.join(
                     output_area_dir,
-                    f'haralick_features_sa_{study_area}_B{band_names[id]}.csv'
+                    f'haralick_features_sa_{study_area}_B{band_names[idx]}.csv'
                 )
                 features_df.to_csv(output_csv_path, index=False)
                 print(f"Features salvas em '{output_csv_path}'.\n\n")
