@@ -87,11 +87,11 @@ def main():
         for id_area, study_area in enumerate(study_areas):
             # Lista com os caminhos das bandas do CBERS-4A
             bands_path = [
-                os.path.join(input_tif_dir, 'CBERS4A_WPM20214220240930_BAND0.tif'),
-                os.path.join(input_tif_dir, 'CBERS4A_WPM20214220240930_BAND1.tif'),
-                os.path.join(input_tif_dir, 'CBERS4A_WPM20214220240930_BAND2.tif'),
-                os.path.join(input_tif_dir, 'CBERS4A_WPM20214220240930_BAND3.tif'),
-                os.path.join(input_tif_dir, 'CBERS4A_WPM20214220240930_BAND4.tif')
+                os.path.join(input_tif_dir, 'CBERS4A_WPM20214220240930_BAND0_recortado.tif'),
+                os.path.join(input_tif_dir, 'CBERS4A_WPM20214220240930_BAND1_recortado.tif'),
+                os.path.join(input_tif_dir, 'CBERS4A_WPM20214220240930_BAND2_recortado.tif'),
+                os.path.join(input_tif_dir, 'CBERS4A_WPM20214220240930_BAND3_recortado.tif'),
+                os.path.join(input_tif_dir, 'CBERS4A_WPM20214220240930_BAND4_recortado.tif')
             ]
 
             # Carrega a segmentação filtrada
