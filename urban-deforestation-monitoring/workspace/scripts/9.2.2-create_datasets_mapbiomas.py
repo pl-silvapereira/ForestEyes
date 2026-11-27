@@ -20,6 +20,9 @@ SAMPLES_CONFIG = {
 }
 RANDOM_SEED = 42
 
+# Desativado por padrão para evitar OSError [Errno 5] ao listar ~300k pastas no Drive
+USE_WORKFLOW_FOLDER_FILTER = False
+
 
 # ==============================================================================
 # 2. FUNÇÕES AUXILIARES DE CARREGAMENTO E AMOSTRAGEM ESTRATIFICADA
@@ -27,6 +30,7 @@ RANDOM_SEED = 42
 def get_available_workflow_tasks(project_root, code_muni):
     """
     Lê os IDs das tarefas existentes nas pastas forest e non-forest do workflow Zooniverse.
+    Usar apenas se a pasta tiver poucos arquivos ou estiver em disco local (/content).
     """
     base_wf = os.path.join(
         project_root,
@@ -36,10 +40,10 @@ def get_available_workflow_tasks(project_root, code_muni):
     for cls_folder in ['forest', 'non-forest']:
         folder_path = os.path.join(base_wf, cls_folder)
         if os.path.exists(folder_path):
-            for entry in os.listdir(folder_path):
-                if entry.startswith('task_'):
+            for entry in os.scandir(folder_path):
+                if entry.name.startswith('task_'):
                     try:
-                        valid_ids.add(int(entry.replace('task_', '')))
+                        valid_ids.add(int(entry.name.replace('task_', '')))
                     except ValueError:
                         pass
     return valid_ids
@@ -105,7 +109,6 @@ def sample_stratified_by_hor(df_class, n_hor_1=50, n_hor_07=50, seed=42):
         raise ValueError(f"Apenas {len(remaining)} segmentos restantes para HoR≈0.7 (necessário: {n_hor_07}).")
 
     remaining['_dist_07'] = (remaining['HoR'] - 0.7).abs()
-    # Ordena pela menor distância de 0.7 (com desempate aleatório reprodutível)
     remaining = remaining.sample(frac=1.0, random_state=seed).sort_values(by='_dist_07', kind='mergesort')
     sample_070 = remaining.head(n_hor_07).drop(columns=['_dist_07']).copy()
     sample_070['HoR_group'] = 'HoR_0.7'
@@ -127,18 +130,18 @@ def main():
     os.makedirs(train_dir, exist_ok=True)
     os.makedirs(test_dir, exist_ok=True)
 
-    print("1. Verificando tarefas disponíveis nas pastas do workflow (forest / non-forest)...")
-    valid_task_ids = get_available_workflow_tasks(PROJECT_ROOT, CODE_MUNI)
-    print(f"   -> Tarefas encontradas nas pastas: {len(valid_task_ids):,}")
-
-    print("2. Carregando segmentos aprovados com referência MapBiomas...")
+    print("1. Carregando segmentos aprovados com referência MapBiomas (etapa 08.4)...")
     df_meta = load_mapbiomas_segments(PROJECT_ROOT, STUDY_AREA)
-    if valid_task_ids:
-        df_meta = df_meta[df_meta['Segment_id'].isin(valid_task_ids)].copy()
+
+    if USE_WORKFLOW_FOLDER_FILTER:
+        print("   -> Filtrando pelas pastas de tarefas do workflow...")
+        valid_task_ids = get_available_workflow_tasks(PROJECT_ROOT, CODE_MUNI)
+        if valid_task_ids:
+            df_meta = df_meta[df_meta['Segment_id'].isin(valid_task_ids)].copy()
 
     print(f"   -> Total de segmentos elegíveis: {len(df_meta):,}")
 
-    print("3. Aplicando amostragem estratificada (100 Forest [50+50] + 50 Non-forest [25+25])...")
+    print("2. Aplicando amostragem estratificada (100 Forest [50+50] + 50 Non-forest [25+25])...")
     train_forest = sample_stratified_by_hor(
         df_meta[df_meta['MapBiomas_class'] == 'Forest'],
         n_hor_1=SAMPLES_CONFIG['Forest']['hor_1'],
@@ -162,7 +165,7 @@ def main():
     print(f"\nResumo da seleção de TREINO ({total_train_segs} segmentos MapBiomas):")
     print(df_train_meta.groupby(['MapBiomas_class', 'HoR_group'])['HoR'].agg(['count', 'min', 'max']))
 
-    print("\n4. Cruzando com as 13 features de Haralick nas bandas [4, 3, 2, 1]...")
+    print("\n3. Cruzando com as 13 features de Haralick nas bandas [4, 3, 2, 1]...")
     df_haralick = load_all_haralick_bands(PROJECT_ROOT, STUDY_AREA, BANDS)
     band_order_df = pd.DataFrame({'band': BANDS, '_band_order': range(len(BANDS))})
 
