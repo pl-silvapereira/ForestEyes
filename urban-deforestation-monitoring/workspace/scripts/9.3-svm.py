@@ -31,7 +31,7 @@ import umap
 
 
 # ==============================================================================
-# 2. DEFINIÇÃO DE PARÂMETROS E DIRETÓRIOS (BUSCA RÁPIDA APENAS EM data/ML)
+# 2. DEFINIÇÃO DE PARÂMETROS E DIRETÓRIOS (ESTRUTURA data/ML/datasets/mapbiomas)
 # ==============================================================================
 t_start = time.time()
 
@@ -57,52 +57,30 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 workspace_dir = os.path.dirname(script_dir)
 data_dir = os.path.join(workspace_dir, 'data')
 ml_dir = os.path.join(data_dir, 'ML')
-
-
-def find_csv_fast(base_ml_dir, target_filename):
-    """
-    Busca rápida restrita apenas a data/ML (nível raiz e 1 subnível),
-    evitando varrer pastas pesadas de imagens/patches no Google Drive.
-    """
-    # 1. Verifica direto na raiz de data/ML
-    direct_path = os.path.join(base_ml_dir, target_filename)
-    if os.path.isfile(direct_path):
-        return direct_path
-
-    # 2. Verifica apenas nas subpastas imediatas de data/ML (ex: train/, test/, SJC/)
-    if os.path.isdir(base_ml_dir):
-        for entry in os.scandir(base_ml_dir):
-            if entry.is_dir():
-                candidate = os.path.join(entry.path, target_filename)
-                if os.path.isfile(candidate):
-                    return candidate
-    return None
-
+mapbiomas_dataset_dir = os.path.join(ml_dir, 'datasets', 'mapbiomas')
 
 train_filename = 'sjc_3549904_2024_mapbiomas_train.csv'
 test_filename = 'sjc_3549904_2024_mapbiomas_test.csv'
 
-train_file_path = find_csv_fast(ml_dir, train_filename)
-test_file_path = find_csv_fast(ml_dir, test_filename)
+train_file_path = os.path.join(mapbiomas_dataset_dir, 'train', train_filename)
+test_file_path = os.path.join(mapbiomas_dataset_dir, 'test', test_filename)
 
-# Diagnóstico imediato caso algum dos arquivos tenha nome ligeiramente diferente
-if train_file_path is None or test_file_path is None:
-    found_in_ml = []
-    if os.path.isdir(ml_dir):
-        for entry in os.scandir(ml_dir):
-            if entry.is_file() and entry.name.endswith('.csv'):
-                found_in_ml.append(entry.name)
-            elif entry.is_dir():
-                for sub in os.scandir(entry.path):
-                    if sub.is_file() and sub.name.endswith('.csv'):
-                        found_in_ml.append(f"{entry.name}/{sub.name}")
+# Fallback rápido apenas dentro de data/ML caso mude de subpasta
+if not os.path.isfile(train_file_path) or not os.path.isfile(test_file_path):
+    for root, _, files in os.walk(ml_dir):
+        if train_filename in files:
+            train_file_path = os.path.join(root, train_filename)
+        if test_filename in files:
+            test_file_path = os.path.join(root, test_filename)
+
+if not os.path.isfile(train_file_path) or not os.path.isfile(test_file_path):
     raise FileNotFoundError(
-        f"Arquivo não encontrado em '{ml_dir}'.\n"
-        f"Procurados: '{train_filename}' e '{test_filename}'.\n"
-        f"CSVs encontrados em data/ML: {found_in_ml}"
+        f"Arquivos não encontrados.\n"
+        f"Esperado treino: {train_file_path}\n"
+        f"Esperado teste:  {test_file_path}"
     )
 
-# Diretório de saída para figuras, HTML, log TXT e tabelas CSV
+# Diretório de saída dentro de workspace/data/ML/results_mapbiomas_only
 output_dir = os.path.join(ml_dir, 'results_mapbiomas_only')
 os.makedirs(output_dir, exist_ok=True)
 
