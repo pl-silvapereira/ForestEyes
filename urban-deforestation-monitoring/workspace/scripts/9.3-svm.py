@@ -120,6 +120,16 @@ log_print(f"Bandas disponíveis no treino: {sorted(X_train_df['band'].unique())}
 # ==============================================================================
 # 4. UNIÃO VETORIZADA DAS FEATURES POR SEGMENTO (1 LINHA = 13 x N_BANDAS)
 # ==============================================================================
+def assign_hor_group(hor_series):
+    """Deriva HoR_group caso a coluna não esteja presente no CSV (ex: conjunto de teste)."""
+    conds = [
+        hor_series >= 0.9999,
+        (hor_series >= 0.7) & (hor_series < 0.9999),
+    ]
+    choices = ['HoR_1.0', 'HoR_0.7']
+    return np.select(conds, choices, default='HoR_<0.7')
+
+
 def build_segment_dataset(dataframe, selected_bands, feature_cols, target_column):
     """
     Versão vetorizada de alta performance: pivota as bandas por Segment_id
@@ -132,15 +142,21 @@ def build_segment_dataset(dataframe, selected_bands, feature_cols, target_column
     valid_segments = band_counts[band_counts == len(selected_bands)].index
     df_valid = df_filtered[df_filtered['Segment_id'].isin(valid_segments)]
 
-    # Metadados únicos por segmento (1 linha por Segment_id)
-    meta_cols = ['Segment_id', 'Study_Area', target_column, 'HoR', 'Size', 'HoR_group']
+    # Metadados únicos por segmento (seleciona apenas colunas presentes no CSV)
+    desired_meta_cols = ['Segment_id', 'Study_Area', target_column, 'HoR', 'Size', 'HoR_group']
+    available_meta_cols = [c for c in desired_meta_cols if c in df_valid.columns]
+
     meta_segments = (
-        df_valid[meta_cols]
+        df_valid[available_meta_cols]
         .drop_duplicates(subset=['Segment_id'])
         .sort_values('Segment_id')
         .rename(columns={target_column: 'MapBiomas_class'})
         .reset_index(drop=True)
     )
+
+    # Garante a coluna HoR_group mesmo se não vier pronta no CSV de teste
+    if 'HoR_group' not in meta_segments.columns and 'HoR' in meta_segments.columns:
+        meta_segments['HoR_group'] = assign_hor_group(meta_segments['HoR'])
 
     # Pivota as 13 features de Haralick por (Segment_id x band)
     pivoted = df_valid.pivot(index='Segment_id', columns='band', values=feature_cols)
@@ -247,15 +263,16 @@ plt.close()
 # ==============================================================================
 # 7. ANÁLISE POR GRUPO DE HOMOGENEIDADE (HoR_group) E MARGEM SVM
 # ==============================================================================
-log_print("\n=== Desempenho por HoR_group no Teste ===")
-for hor_grp in sorted(meta_test['HoR_group'].unique()):
-    idx = (meta_test['HoR_group'] == hor_grp).values
-    if len(np.unique(y_test_mapbiomas[idx])) > 1:
-        b_acc = balanced_accuracy_score(y_test_mapbiomas[idx], y_test_pred[idx])
-        log_print(f"Grupo = {hor_grp} | Segmentos = {np.sum(idx)} | Bal. Acc. = {b_acc:.4f}")
-    else:
-        acc_grp = accuracy_score(y_test_mapbiomas[idx], y_test_pred[idx])
-        log_print(f"Grupo = {hor_grp} | Segmentos = {np.sum(idx)} | Acc. (classe única) = {acc_grp:.4f}")
+if 'HoR_group' in meta_test.columns:
+    log_print("\n=== Desempenho por HoR_group no Teste ===")
+    for hor_grp in sorted(meta_test['HoR_group'].unique()):
+        idx = (meta_test['HoR_group'] == hor_grp).values
+        if len(np.unique(y_test_mapbiomas[idx])) > 1:
+            b_acc = balanced_accuracy_score(y_test_mapbiomas[idx], y_test_pred[idx])
+            log_print(f"Grupo = {hor_grp} | Segmentos = {np.sum(idx)} | Bal. Acc. = {b_acc:.4f}")
+        else:
+            acc_grp = accuracy_score(y_test_mapbiomas[idx], y_test_pred[idx])
+            log_print(f"Grupo = {hor_grp} | Segmentos = {np.sum(idx)} | Acc. (classe única) = {acc_grp:.4f}")
 
 # Gráfico de Margem (Decision Function) do SVM no treino por HoR_group e Classe
 scores_train = svm_mapbiomas_based.decision_function(X_train_mapbiomas_scaled)
