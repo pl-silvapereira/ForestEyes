@@ -8,6 +8,7 @@ os.environ['ABSL_MIN_LOG_LEVEL'] = '3'
 # ==============================================================================
 # 1. IMPORTAÇÃO DE BIBLIOTECAS
 # ==============================================================================
+import time
 import random
 import numpy as np
 import pandas as pd
@@ -30,59 +31,86 @@ import umap
 
 
 # ==============================================================================
-# 2. DEFINIÇÃO DE PARÂMETROS E DIRETÓRIOS (BUSCA AUTOMÁTICA EM workspace/data)
+# 2. DEFINIÇÃO DE PARÂMETROS E DIRETÓRIOS (BUSCA RÁPIDA APENAS EM data/ML)
 # ==============================================================================
-bands_list = [4, 3, 2, 1]  # Bandas CBERS-4A WPM fusionado (2m): NIR, Red, Green, Blue
+t_start = time.time()
 
+# Bandas CBERS-4A WPM fusionado (2m): [4, 3, 2, 1] (NIR, Red, Green, Blue)
+bands_list = [4, 3, 2, 1]  # Pode testar subconjuntos, ex: [4, 3, 2]
+
+# Áreas de estudo para descartar (ex: ['3549904_2024']), vazio = usa tudo
 sa_to_discard_train = []
 sa_to_discard_test = []
 
+# Coluna alvo de verdade terrestre
 target_col = 'MapBiomas_class'
 
+# Lista explícita das 13 features de textura de Haralick (evita erro de índice)
 HARALICK_COLS = [
     'ASM', 'Contrast', 'Correlation', 'Variance', 'IDM',
     'Sum_Average', 'Sum_Variance', 'Sum_Entropy', 'Entropy',
     'Diff_Variance', 'Diff_Entropy', 'IMC1', 'IMC2'
 ]
 
+# Resolve o diretório workspace automaticamente a partir de workspace/scripts/9.3-svm.py
 script_dir = os.path.dirname(os.path.abspath(__file__))
 workspace_dir = os.path.dirname(script_dir)
 data_dir = os.path.join(workspace_dir, 'data')
 ml_dir = os.path.join(data_dir, 'ML')
 
 
-def find_csv_file(search_root, target_filename):
-    for root, _, files in os.walk(search_root):
-        if target_filename in files:
-            return os.path.join(root, target_filename)
+def find_csv_fast(base_ml_dir, target_filename):
+    """
+    Busca rápida restrita apenas a data/ML (nível raiz e 1 subnível),
+    evitando varrer pastas pesadas de imagens/patches no Google Drive.
+    """
+    # 1. Verifica direto na raiz de data/ML
+    direct_path = os.path.join(base_ml_dir, target_filename)
+    if os.path.isfile(direct_path):
+        return direct_path
+
+    # 2. Verifica apenas nas subpastas imediatas de data/ML (ex: train/, test/, SJC/)
+    if os.path.isdir(base_ml_dir):
+        for entry in os.scandir(base_ml_dir):
+            if entry.is_dir():
+                candidate = os.path.join(entry.path, target_filename)
+                if os.path.isfile(candidate):
+                    return candidate
     return None
 
 
 train_filename = 'sjc_3549904_2024_mapbiomas_train.csv'
 test_filename = 'sjc_3549904_2024_mapbiomas_test.csv'
 
-train_file_path = find_csv_file(data_dir, train_filename)
-test_file_path = find_csv_file(data_dir, test_filename)
+train_file_path = find_csv_fast(ml_dir, train_filename)
+test_file_path = find_csv_fast(ml_dir, test_filename)
 
+# Diagnóstico imediato caso algum dos arquivos tenha nome ligeiramente diferente
 if train_file_path is None or test_file_path is None:
-    available_csvs = [
-        os.path.relpath(os.path.join(r, f), data_dir)
-        for r, _, fs in os.walk(ml_dir if os.path.exists(ml_dir) else data_dir)
-        for f in fs if f.endswith('.csv')
-    ]
+    found_in_ml = []
+    if os.path.isdir(ml_dir):
+        for entry in os.scandir(ml_dir):
+            if entry.is_file() and entry.name.endswith('.csv'):
+                found_in_ml.append(entry.name)
+            elif entry.is_dir():
+                for sub in os.scandir(entry.path):
+                    if sub.is_file() and sub.name.endswith('.csv'):
+                        found_in_ml.append(f"{entry.name}/{sub.name}")
     raise FileNotFoundError(
-        f"Arquivo não encontrado em '{data_dir}'.\n"
+        f"Arquivo não encontrado em '{ml_dir}'.\n"
         f"Procurados: '{train_filename}' e '{test_filename}'.\n"
-        f"CSVs encontrados em data/ML: {available_csvs}"
+        f"CSVs encontrados em data/ML: {found_in_ml}"
     )
 
-output_dir = os.path.join(ml_dir if os.path.exists(ml_dir) else data_dir, 'results_mapbiomas_only')
+# Diretório de saída para figuras, HTML, log TXT e tabelas CSV
+output_dir = os.path.join(ml_dir, 'results_mapbiomas_only')
 os.makedirs(output_dir, exist_ok=True)
 
 log_lines = []
 
 
 def log_print(msg=""):
+    """Imprime no console/célula com flush imediato e acumula para salvar em .txt."""
     print(msg, flush=True)
     log_lines.append(str(msg))
 
@@ -112,44 +140,48 @@ log_print(f"Bandas disponíveis no treino: {sorted(X_train_df['band'].unique())}
 
 
 # ==============================================================================
-# 4. UNIÃO DAS FEATURES POR SEGMENTO (1 LINHA POR SEGMENTO = 13 x N_BANDAS)
+# 4. UNIÃO VETORIZADA DAS FEATURES POR SEGMENTO (1 LINHA = 13 x N_BANDAS)
 # ==============================================================================
 def build_segment_dataset(dataframe, selected_bands, feature_cols, target_column):
-    band_order = {b: i for i, b in enumerate(selected_bands)}
+    """
+    Versão vetorizada de alta performance: pivota as bandas por Segment_id
+    sem loops Python, reduzindo drasticamente o consumo de RAM e o tempo.
+    """
     df_filtered = dataframe[dataframe['band'].isin(selected_bands)].copy()
-    df_filtered['band_rank'] = df_filtered['band'].map(band_order)
-    df_filtered = df_filtered.sort_values(by=['Segment_id', 'band_rank'], kind='stable')
 
-    X_rows = []
-    meta_rows = []
+    # Filtra apenas segmentos completos (com todas as bandas selecionadas)
+    band_counts = df_filtered.groupby('Segment_id')['band'].nunique()
+    valid_segments = band_counts[band_counts == len(selected_bands)].index
+    df_valid = df_filtered[df_filtered['Segment_id'].isin(valid_segments)]
 
-    for seg_id, group in df_filtered.groupby('Segment_id', sort=False):
-        if len(group) != len(selected_bands):
-            log_print(f"[AVISO] Segment_id {seg_id} possui {len(group)} bandas (esperado: {len(selected_bands)}). Ignorado.")
-            continue
+    # Metadados únicos por segmento (1 linha por Segment_id)
+    meta_cols = ['Segment_id', 'Study_Area', target_column, 'HoR', 'Size', 'HoR_group']
+    meta_segments = (
+        df_valid[meta_cols]
+        .drop_duplicates(subset=['Segment_id'])
+        .sort_values('Segment_id')
+        .rename(columns={target_column: 'MapBiomas_class'})
+        .reset_index(drop=True)
+    )
 
-        seg_features = group[feature_cols].values.flatten()
-        X_rows.append(seg_features)
+    # Pivota as 13 features de Haralick por (Segment_id x band)
+    pivoted = df_valid.pivot(index='Segment_id', columns='band', values=feature_cols)
+    pivoted = pivoted.sort_index()
 
-        first_row = group.iloc[0]
-        meta_rows.append({
-            'Segment_id': seg_id,
-            'Study_Area': first_row['Study_Area'],
-            'MapBiomas_class': first_row[target_column],
-            'HoR': first_row['HoR'],
-            'Size': first_row['Size'],
-            'HoR_group': first_row['HoR_group']
-        })
+    # Reordena colunas na ordem exata de `selected_bands` (ex: B4_ASM, ..., B1_IMC2)
+    ordered_cols = [(feat, b) for b in selected_bands for feat in feature_cols]
+    pivoted = pivoted[ordered_cols]
+    pivoted.columns = [f"B{b}_{feat}" for (feat, b) in ordered_cols]
 
-    col_names = [f"B{b}_{feat}" for b in selected_bands for feat in feature_cols]
-    X_segments = pd.DataFrame(X_rows, columns=col_names)
-    meta_segments = pd.DataFrame(meta_rows)
-
+    X_segments = pivoted.reset_index(drop=True)
     return X_segments, meta_segments
 
 
 new_X_train, meta_train = build_segment_dataset(X_train_df, bands_list, HARALICK_COLS, target_col)
 new_X_test, meta_test = build_segment_dataset(X_test_df, bands_list, HARALICK_COLS, target_col)
+
+# Libera dataframes brutos da memória
+del df_train_raw, df_test_raw, X_train_df, X_test_df
 
 y_train_mapbiomas = meta_train['MapBiomas_class'].values
 y_test_mapbiomas = meta_test['MapBiomas_class'].values
@@ -191,6 +223,7 @@ def train_5_fold_cross_validation(model, cv, X_train, y_train):
 
     log_print(f"Mean 5-Fold CV Balanced Accuracy: {np.mean(scores_cv):.4f} (+/- {np.std(scores_cv):.4f})")
 
+    # Reajusta o modelo final com 100% dos dados de treino normalizados
     model.fit(X_arr, y_arr)
     return model
 
@@ -206,6 +239,7 @@ svm_mapbiomas_based = train_5_fold_cross_validation(
     y_train_mapbiomas
 )
 
+# Predição no conjunto de teste
 y_test_pred = svm_mapbiomas_based.predict(X_test_mapbiomas_scaled)
 bal_acc_test = balanced_accuracy_score(y_test_mapbiomas, y_test_pred)
 acc_test = accuracy_score(y_test_mapbiomas, y_test_pred)
@@ -228,6 +262,7 @@ ConfusionMatrixDisplay.from_predictions(
 plt.title(f"SVM MapBiomas-based (Bal. Acc: {bal_acc_test:.3f})")
 plt.tight_layout()
 plt.savefig(os.path.join(output_dir, 'confusion_matrix_mapbiomas.png'), dpi=300)
+plt.show()
 plt.close()
 
 
@@ -244,6 +279,7 @@ for hor_grp in sorted(meta_test['HoR_group'].unique()):
         acc_grp = accuracy_score(y_test_mapbiomas[idx], y_test_pred[idx])
         log_print(f"Grupo = {hor_grp} | Segmentos = {np.sum(idx)} | Acc. (classe única) = {acc_grp:.4f}")
 
+# Gráfico de Margem (Decision Function) do SVM no treino por HoR_group e Classe
 scores_train = svm_mapbiomas_based.decision_function(X_train_mapbiomas_scaled)
 hor_groups = sorted(meta_train['HoR_group'].unique())
 
@@ -263,6 +299,7 @@ plt.title("Margem do SVM por HoR_group e Classe (Treino)")
 plt.legend()
 plt.tight_layout()
 plt.savefig(os.path.join(output_dir, 'svm_margin_by_hor.png'), dpi=300)
+plt.show()
 plt.close()
 
 
@@ -284,6 +321,7 @@ plt.legend()
 plt.grid(True, linestyle='--', alpha=0.4)
 plt.tight_layout()
 plt.savefig(os.path.join(output_dir, 'pca_2d_mapbiomas.png'), dpi=300)
+plt.show()
 plt.close()
 
 # 8.2 UMAP 2D
@@ -300,9 +338,10 @@ plt.legend()
 plt.grid(True, linestyle='--', alpha=0.4)
 plt.tight_layout()
 plt.savefig(os.path.join(output_dir, 'umap_2d_mapbiomas.png'), dpi=300)
+plt.show()
 plt.close()
 
-# 8.3 t-SNE 2D
+# 8.3 t-SNE 2D (com PCA intermediário dinâmico)
 n_pca_inter = min(20, X_train_mapbiomas_scaled.shape[1], X_train_mapbiomas_scaled.shape[0] - 1)
 X_pca_inter = PCA(n_components=n_pca_inter, random_state=42).fit_transform(X_train_mapbiomas_scaled)
 
@@ -319,9 +358,10 @@ plt.legend()
 plt.grid(True, linestyle='--', alpha=0.4)
 plt.tight_layout()
 plt.savefig(os.path.join(output_dir, 'tsne_2d_mapbiomas.png'), dpi=300)
+plt.show()
 plt.close()
 
-# 8.4 t-SNE 3D Interativo (Plotly -> salvo em HTML)
+# 8.4 t-SNE 3D Interativo (Plotly -> exibe na célula e salva em HTML)
 tsne_3d = TSNE(n_components=3, perplexity=perp, random_state=42)
 X_tsne_3 = tsne_3d.fit_transform(X_pca_inter)
 
@@ -346,12 +386,13 @@ fig = px.scatter_3d(
     title='t-SNE 3D - SJC (MapBiomas)'
 )
 fig.write_html(os.path.join(output_dir, 'tsne_3d_mapbiomas.html'))
+fig.show()
 
 
 # ==============================================================================
 # 9. CÁLCULO DE ÁREA EM HECTARES (CBERS-4A 2m x 2m = 4 m² por pixel)
 # ==============================================================================
-PIXEL_AREA_M2 = 4.0
+PIXEL_AREA_M2 = 4.0  # Resolução espacial CBERS-4A fusionado (2m)
 M2_PER_HECTARE = 10000.0
 
 results_test_df = meta_test.copy()
@@ -370,10 +411,12 @@ area_summary['Diferenca_ha'] = area_summary['Area_Predita_SVM_ha'] - area_summar
 log_print("\n=== Estimativa de Área (Hectares) no Conjunto de Teste ===")
 log_print(area_summary.round(4).to_string())
 
+# Salva as tabelas finais em CSV
 results_test_df.to_csv(os.path.join(output_dir, 'predictions_test_sjc_mapbiomas.csv'), index=False)
 area_summary.to_csv(os.path.join(output_dir, 'area_summary_sjc_mapbiomas.csv'))
 
-log_print("\nScript 9.3-svm.py finalizado com sucesso!")
+elapsed = time.time() - t_start
+log_print(f"\nScript 9.3-svm.py finalizado com sucesso em {elapsed:.2f}s!")
 
 # Salva o log completo em TXT na pasta de saída
 with open(os.path.join(output_dir, 'execution_log_mapbiomas.txt'), 'w', encoding='utf-8') as f:
