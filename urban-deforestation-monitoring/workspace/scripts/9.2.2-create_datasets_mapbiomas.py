@@ -11,8 +11,13 @@ STUDY_AREA = '3549904_2024'
 CODE_MUNI = '3549904'
 BANDS = [4, 3, 2, 1]  # Bandas CBERS-4A fusionadas (NIR, Red, Green, Blue)
 
-# Estratificação solicitada: 50 Forest + 50 Non-forest = 100 segmentos no total
-N_PER_SUBGROUP = 25  # 25 com HoR == 1.0 e 25 com HoR mais próximo de 0.7
+# Estratificação solicitada: 150 segmentos no total (100 Forest + 50 Non-forest)
+# - Forest:     50 HoR == 1.0 + 50 HoR mais próximo possível de 0.7
+# - Non-forest: 25 HoR == 1.0 + 25 HoR mais próximo possível de 0.7
+SAMPLES_CONFIG = {
+    'Forest': {'hor_1': 50, 'hor_07': 50},
+    'Non-forest': {'hor_1': 25, 'hor_07': 25},
+}
 RANDOM_SEED = 42
 
 
@@ -81,28 +86,28 @@ def load_mapbiomas_segments(project_root, study_area):
     return df_all[['Segment_id', 'Study_Area', 'MapBiomas_class', 'HoR', 'Size']]
 
 
-def sample_stratified_by_hor(df_class, n_per_subgroup=25, seed=42):
+def sample_stratified_by_hor(df_class, n_hor_1=50, n_hor_07=50, seed=42):
     """
-    Seleciona n_per_subgroup segmentos com HoR == 1.0 e n_per_subgroup
-    segmentos com HoR mais próximo de 0.7 (HoR >= 0.7).
+    Seleciona n_hor_1 segmentos com HoR == 1.0 e n_hor_07 segmentos
+    com HoR mais próximo de 0.7 (HoR >= 0.7).
     """
     # Subgrupo 1: HoR == 1.0
     df_hor_100 = df_class[np.isclose(df_class['HoR'], 1.0, atol=1e-6)]
-    if len(df_hor_100) < n_per_subgroup:
-        raise ValueError(f"Apenas {len(df_hor_100)} segmentos com HoR=1.0 disponíveis (necessário: {n_per_subgroup}).")
-    sample_100 = df_hor_100.sample(n=n_per_subgroup, random_state=seed).copy()
+    if len(df_hor_100) < n_hor_1:
+        raise ValueError(f"Apenas {len(df_hor_100)} segmentos com HoR=1.0 disponíveis (necessário: {n_hor_1}).")
+    sample_100 = df_hor_100.sample(n=n_hor_1, random_state=seed).copy()
     sample_100['HoR_group'] = 'HoR_1.0'
 
     # Subgrupo 2: HoR == 0.7 ou o mais próximo disso (excluindo os já selecionados no subgrupo 1)
     remaining = df_class[~df_class['Segment_id'].isin(sample_100['Segment_id'])].copy()
     remaining = remaining[remaining['HoR'] >= 0.7].copy()
-    if len(remaining) < n_per_subgroup:
-        raise ValueError(f"Apenas {len(remaining)} segmentos restantes para HoR≈0.7 (necessário: {n_per_subgroup}).")
+    if len(remaining) < n_hor_07:
+        raise ValueError(f"Apenas {len(remaining)} segmentos restantes para HoR≈0.7 (necessário: {n_hor_07}).")
 
     remaining['_dist_07'] = (remaining['HoR'] - 0.7).abs()
     # Ordena pela menor distância de 0.7 (com desempate aleatório reprodutível)
     remaining = remaining.sample(frac=1.0, random_state=seed).sort_values(by='_dist_07', kind='mergesort')
-    sample_070 = remaining.head(n_per_subgroup).drop(columns=['_dist_07']).copy()
+    sample_070 = remaining.head(n_hor_07).drop(columns=['_dist_07']).copy()
     sample_070['HoR_group'] = 'HoR_0.7'
 
     return pd.concat([sample_100, sample_070], ignore_index=True)
@@ -133,25 +138,28 @@ def main():
 
     print(f"   -> Total de segmentos elegíveis: {len(df_meta):,}")
 
-    print("3. Aplicando amostragem estratificada (25 HoR=1.0 + 25 HoR≈0.7 por classe)...")
+    print("3. Aplicando amostragem estratificada (100 Forest [50+50] + 50 Non-forest [25+25])...")
     train_forest = sample_stratified_by_hor(
         df_meta[df_meta['MapBiomas_class'] == 'Forest'],
-        n_per_subgroup=N_PER_SUBGROUP,
+        n_hor_1=SAMPLES_CONFIG['Forest']['hor_1'],
+        n_hor_07=SAMPLES_CONFIG['Forest']['hor_07'],
         seed=RANDOM_SEED
     )
     train_non_forest = sample_stratified_by_hor(
         df_meta[df_meta['MapBiomas_class'] == 'Non-forest'],
-        n_per_subgroup=N_PER_SUBGROUP,
+        n_hor_1=SAMPLES_CONFIG['Non-forest']['hor_1'],
+        n_hor_07=SAMPLES_CONFIG['Non-forest']['hor_07'],
         seed=RANDOM_SEED
     )
 
     df_train_meta = pd.concat([train_forest, train_non_forest], ignore_index=True)
     train_ids = set(df_train_meta['Segment_id'])
 
-    # Todos os demais segmentos aprovados (fora dos 100 de treino) vão para Teste
+    # Todos os demais segmentos aprovados (fora dos 150 de treino) vão para Teste
     df_test_meta = df_meta[~df_meta['Segment_id'].isin(train_ids)].copy()
 
-    print("\nResumo da seleção de TREINO (100 segmentos MapBiomas):")
+    total_train_segs = len(df_train_meta)
+    print(f"\nResumo da seleção de TREINO ({total_train_segs} segmentos MapBiomas):")
     print(df_train_meta.groupby(['MapBiomas_class', 'HoR_group'])['HoR'].agg(['count', 'min', 'max']))
 
     print("\n4. Cruzando com as 13 features de Haralick nas bandas [4, 3, 2, 1]...")

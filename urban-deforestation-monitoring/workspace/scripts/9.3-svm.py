@@ -222,7 +222,8 @@ def train_5_fold_cross_validation(model, cv, X_train, y_train):
     return model
 
 
-svm_mapbiomas_based = SVC(C=1.0, kernel='linear', random_state=42, verbose=False)
+# class_weight=None respeita a proporção 2:1 (100 Forest : 50 Non-forest)
+svm_mapbiomas_based = SVC(C=1.0, kernel='linear', class_weight=None, random_state=42, verbose=False)
 cv_mapbiomas_based = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
 log_print("\n=== Treinamento SVM (MapBiomas-based) ===")
@@ -406,9 +407,23 @@ area_summary['Diferenca_ha'] = area_summary['Area_Predita_SVM_ha'] - area_summar
 log_print("\n=== Estimativa de Área (Hectares) no Conjunto de Teste ===")
 log_print(area_summary.round(4).to_string())
 
+# Matriz de Confusão em Hectares (Verdade MapBiomas vs. Predição SVM CBERS-4A)
+area_cm = pd.crosstab(
+    results_test_df['MapBiomas_class'],
+    results_test_df['Predicted_class'],
+    values=results_test_df['Area_ha'],
+    aggfunc='sum',
+    margins=True,
+    margins_name='Total_ha'
+).fillna(0)
+
+log_print("\n=== Matriz de Confusão em HECTARES (MapBiomas 2020-2024 vs. SVM CBERS-4A 2024) ===")
+log_print(area_cm.round(4).to_string())
+
 # Salva as tabelas finais em CSV
 results_test_df.to_csv(os.path.join(output_dir, 'predictions_test_sjc_mapbiomas.csv'), index=False)
 area_summary.to_csv(os.path.join(output_dir, 'area_summary_sjc_mapbiomas.csv'))
+area_cm.to_csv(os.path.join(output_dir, 'confusion_matrix_hectares_sjc.csv'))
 
 elapsed = time.time() - t_start
 log_print(f"\nScript 9.3-svm.py finalizado com sucesso em {elapsed:.2f}s!")
