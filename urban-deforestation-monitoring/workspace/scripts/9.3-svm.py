@@ -22,6 +22,8 @@ from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 import umap
 
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suprime logs INFO/WARNING do TensorFlow/absl
 
 # ==============================================================================
 # 2. DEFINIÇÃO DE PARÂMETROS E DIRETÓRIOS (BUSCA AUTOMÁTICA EM workspace/data)
